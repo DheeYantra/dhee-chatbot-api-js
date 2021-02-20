@@ -1,4 +1,4 @@
-# dhee-voicebot-api-js
+# dhee-chatbot-api-js
 
 The javascript API for initiating chat with agents deployed in Dhee.AI cloud.
 
