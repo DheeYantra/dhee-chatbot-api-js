@@ -24,7 +24,7 @@ DheeChatApi.init(dheeChatConfig);
 
 ```
 
-A chat is started using the function start, as in the example below : 
+A chat is started as in the example below : 
 
 ```javascript
 
