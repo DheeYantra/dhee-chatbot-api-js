@@ -135,7 +135,7 @@
                 });
 
             }
-
+            this.isRecording = false;
             this.initiatePaymentFramework();
 
         },
@@ -283,7 +283,7 @@
                     //this.tempResetMicButton();
                 } else {
                     this.recordButton.dispatchEvent(new Event('pause'));
-                    this.resetMicButton();
+                    console.log("ASR ended.");
                 }
             } else {
                 console.log("No need to pause mic. Not recording");
@@ -832,7 +832,7 @@
                     if (event.error === 'no-speech') {
                         console.log("No speech.. stopping recording..");
                         ignore_onend = true;
-                        dheeChatWidget.resetMicButton();
+                        console.log("ASR ended.");
 
                     }
                     if (event.error === 'audio-capture') {
@@ -841,7 +841,7 @@
                             message: "No Microphone detected !"
                         });
                         ignore_onend = true;
-                        dheeChatWidget.resetMicButton();
+                        console.log("ASR ended.");
                     }
                     if (event.error === 'not-allowed') {
                         if (event.timeStamp - dhee_record_start_time < 100) {
@@ -856,7 +856,7 @@
                             });
                         }
                         ignore_onend = true;
-                        dheeChatWidget.resetMicButton();
+                        console.log("ASR ended.");
                     }
 
                 };
@@ -870,7 +870,7 @@
                         //chatController.tempResetMicButton();
                     } else {
                         recognizing = false;
-                        dheeChatWidget.resetMicButton();
+                        console.log("ASR ended.");
                     }
 
                 };
@@ -901,6 +901,8 @@
                             dheeChatWidget.sendMessage(transcript);
                         }
                     }
+
+                    dheeChatWidget.inputBox.value = transcript;
                 };
 
                 dheeChatWidget.startListening = function () {
