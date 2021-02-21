@@ -2,7 +2,7 @@
 
 The javascript API for initiating chat with agents deployed in Dhee.AI cloud.
 
-Download the JS file dhee-chat-api.js from the **downloads** folder and include it in your server's scripts.
+Download the JS file [dhee-chat-api.js](https://raw.githubusercontent.com/DheeYantra/dhee-chatbot-api-js/main/src/main/resources/static/dhee-chat-api.js)  and include it in your server's scripts.
 
 Add the script then to the HTML page where you would want your users to have voice conversations.
 
