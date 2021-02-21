@@ -11,7 +11,12 @@ Initialize the chat client as below:
 
 ```javascript
 
-TBD
+var dheeChatConfig = {};
+dheeChatConfig.instanceId = 'js-api-test';
+dheeChatConfig.inputMessageBoxId = 'userMessage';
+dheeChatConfig.onIncomingMessage = onMessage;
+dheeChatConfig.onAllBotsBusy = onAllBotsBusy;
+DheeChatApi.init(dheeChatConfig);
 
 ```
 
@@ -19,19 +24,23 @@ A chat is started using the function start, as in the example below :
 
 ```javascript
 
-TBD
+DheeChatApi.launchDheeChat(USERNAME, CONTACTNUMBER, LANGUAGE);
 
 ```
+USERNAME is the name with which the bot is supposed to address the chat user.
+CONTACTNUMBER is the mobile number of the chat user if available. Else fill in with 10 zeros.
 
 **Supported languages are : ENGLISH, HINDI, BANGLA, TAMIL, TELUGU, KANNADA, MARATHI, GUJARATI, MALAYALAM**
 
 Event handlers can be set as below :
 ```javascript
 
-TBD
+dheeChatConfig.onIncomingMessage =  function(message) {
+// handle message from bot, like displaying in a div.
+}
 
 ```
-Events supported are TBD.
+Events supported are onIncomingMessage, onError, onAllBotsBusy.
 
 
 At any point disable speak aloud feature with -
