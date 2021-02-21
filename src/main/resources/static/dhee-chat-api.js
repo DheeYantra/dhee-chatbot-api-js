@@ -66,6 +66,25 @@
             this.speak = false;
             this.speechSignalsCanvas = config.speechSignalsCanvas;
             this.inputBoxId = config.inputMessageBoxId ? config.inputMessageBoxId : false;
+            this.developerId = config.developerId ? config.developerId : false;
+
+            if (!config.onIncomingMessage) {
+                throw new Error("Incoming message handler not set !");
+            }
+            this.onIncomingMessage = config.onIncomingMessage;
+
+            if (!config.onAllBotsBusy) {
+                throw new Error("Bots busy handler not set !");
+            }
+            this.handleNoChatSignal = config.onAllBotsBusy;
+
+            this.onError = config.onError ? config.onError : function(e) {
+                if (e) {
+                    console.error(e);
+                } else {
+                    console.error("Unknown error");
+                }
+            }
 
 
             if (this.inputBoxId) {
@@ -104,7 +123,7 @@
                     ap.setAttribute("style", "diplay:none");
                     ap.setAttribute("type", 'audio/mpeg; codecs="mp3"');
                     ap.setAttribute("muted", "true");
-                    document.appendChild(ap);
+                    document.body.appendChild(ap);
                 }
                 ap.addEventListener("ended", function (event) {
                     audioTracks.shift();
@@ -124,7 +143,7 @@
         launchDheeChat: function (userName, phoneNo, language, initIntent, initParams) {
 
             var postParams = {
-                instanceId: dhee_instance_id,
+                instanceId: DheeChatApi.instanceId,
                 userName: userName,
                 contactNumber: phoneNo,
                 language: language,
@@ -136,10 +155,12 @@
                 locale: DheeChatApi.locale,
                 timeZone: DheeChatApi.timeZone,
                 pageURL: DheeChatApi.pageURL,
-                deviceModel: DheeChatApi.deviceModel,
-                developerId: window.dhee_developer_id
+                deviceModel: DheeChatApi.deviceModel
 
             };
+            if (this.developerId) {
+                postParams.developerId = this.developerId;
+            }
 
             if (initIntent) {
                 postParams.initIntent = initIntent;
@@ -150,10 +171,10 @@
             }
 
 
-            $.post(dhee_server_stub + 'web/start-chat', postParams).done(function (starterInfo) {
+            $.post(this.myServerAddress + '/web/start-chat', postParams).done(function (starterInfo) {
 
                 if (starterInfo.projectId == null) {
-                    handleNoChatSignal(starterInfo);
+                    DheeChatApi.handleNoChatSignal(starterInfo);
                 } else {
                     DheeChatApi.userFullName = userName;
                     DheeChatApi.contactNumber = phoneNo;
@@ -188,12 +209,8 @@
                 stub = 'sandbox';
             }
             var chatServer = DheeChatApi.myServerAddress;
-            var chatContextPath = '/http-bind/';
-
-            if (window.dhee_use_websocket) {
-                chatServer = chatServer.replace("http:", "ws:").replace("https:", "wss:");
-                chatContextPath = '/live-chat/ws'
-            }
+            chatServer = chatServer.replace("http:", "ws:").replace("https:", "wss:");
+            var chatContextPath = '/live-chat/ws'
 
             var connectionConfig = {
                 userName: info.handlerJid,
@@ -221,14 +238,10 @@
                 this.sendCloseIntent();
                 setTimeout(function () {
                     DheeChatApi.sendCloseIntent();
-                    setTimeout(function () {
-                        DheeChatApi.resetChatUI();
-                    }, 300);
                 }, 100);
 
             } else {
                 DheeChatApi.quit();
-                DheeChatApi.resetChatUI();
             }
         },
 
@@ -496,7 +509,6 @@
             }
 
             function print(text) {
-                DheeChatApi.hideTyping();
                 var messages = text.split("\n");
                 var message;
                 var wholeMessage = '';
@@ -529,6 +541,9 @@
             if (utterance.text && utterance.text.trim().length > 0) {
                 DheeChatApi.speakAloud(DheeChatApi.getSpeakableText(utterance.text), utterance.id);
             }
+            setTimeout(function () {
+                print(utterance.text);
+            }, 900);
         },
 
         handlePresence: function (oJSJaCPacket) {
@@ -554,8 +569,8 @@
             console.error("Error : " + e);
             var errorMessage = "Network error. connection broken! ";
             console.error(errorMessage);
-            this.onError(e);
-            this.quit();
+            DheeChatApi.onError(e);
+            DheeChatApi.quit();
         },
 
         reconnectToServer: function () {
@@ -730,7 +745,7 @@
             if (!hasVoice) {
 
                 var ap = document.getElementById("dhee_tts_output_player");
-                var audioUrl = dhee_server_stub + "audio/" + this.info.voiceAssistanceKey + "/get-voice?utteranceId=" + utteranceId;
+                var audioUrl = this.myServerAddress + "/audio/" + this.info.voiceAssistanceKey + "/get-voice?utteranceId=" + utteranceId;
                 this.audioTracks.push(audioUrl);
                 if (this.audioTracks.length == 1) {
                     ap.src = audioUrl;
@@ -1302,13 +1317,10 @@
                 p.setType("unavailable");
                 dhee_bosh_connection.send(p);
                 this.toClose = true;
-                this.inputBox.disabled = true;
+                
                 setTimeout(function () {
                     dhee_bosh_connection.disconnect();
-                    DheeChatApi.markConversationEnd();
                 }, 500)
-            } else {
-                this.markConversationEnd();
             }
 
             if (this.audioContext) {
@@ -1416,6 +1428,9 @@
             if (internal) {
                 extBegin = "{{EXT:";
                 extEnd = "}}";
+            }
+            if (!this.themeColor) {
+                this.themeColor = "#074F8C"
             }
             var ligherShade = this.getLigherShade(0.72, this.themeColor);
             var extBeginIndex = text.indexOf(extBegin);
@@ -1816,4 +1831,6 @@
         themeColor: window.dhee_theme_color,
         otpVerification: window.dhee_otp_verification
     }
+
+    window.DheeChatApi = DheeChatApi;
 })(window.jQuery);
