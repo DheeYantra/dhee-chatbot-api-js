@@ -67,6 +67,8 @@
             this.speechSignalsCanvas = config.speechSignalsCanvas;
             this.inputBoxId = config.inputMessageBoxId ? config.inputMessageBoxId : false;
             this.developerId = config.developerId ? config.developerId : false;
+            this.onDheeSpeechStart = config.onDheeSpeechStart ? config.onDheeSpeechStart : false;
+            this.onDheeSpeechFinished = config.onDheeSpeechFinished ? config.onDheeSpeechFinished : false;
 
             if (!config.onIncomingMessage) {
                 throw new Error("Incoming message handler not set !");
@@ -131,6 +133,15 @@
                         var nextAudioUrl = audioTracks[0];
                         ap.src = nextAudioUrl;
                         ap.play();
+                    } else {
+                        if (DheeChatApi.onDheeSpeechFinished) {
+                            DheeChatApi.onDheeSpeechFinished();
+                        }
+                    }
+                });
+                ap.addEventListener("play", function (event) {
+                    if (DheeChatApi.onDheeSpeechStart) {
+                        DheeChatApi.onDheeSpeechStart();
                     }
                 });
 
@@ -769,12 +780,18 @@
                 dheeChatWidget.startSynthesisResumeCycles();
                 dheeChatWidget.micPaused = true;
                 dheeChatWidget.pauseMic(true);
+                if (dheeChatWidget.onDheeSpeechStart) {
+                    dheeChatWidget.onDheeSpeechStart();
+                }
             };
 
             msg.onend = function (event) {
                 dheeChatWidget.stopSynthesisResumeCycles();
                 dheeChatWidget.micPaused = false;
                 dheeChatWidget.resumeMic();
+                if (dheeChatWidget.onDheeSpeechFinished) {
+                    dheeChatWidget.onDheeSpeechFinished();
+                }
             };
 
             this.tts.speak(msg);
