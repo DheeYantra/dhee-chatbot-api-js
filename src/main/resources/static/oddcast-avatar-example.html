@@ -51,15 +51,22 @@
         #statusDiv {
             margin-bottom: 16px;
         }
+
         .messageLine {
             margin: 5px;
         }
+
         .leftAlign {
             text-align: left;
         }
+
         .rightAlign {
             text-align: right;
             color: peachpuff;
+        }
+
+        #avatarPanel {
+            margin-left: calc(50% - 200px);
         }
     </style>
 </head>
@@ -69,6 +76,13 @@
     <div id="statusDiv">Click on the Start Chat Button to initiate a chat</div>
     <button title="Start Chat" id="startChatButton">Start Chat</button>
     <button title="Stop Chat" id="stopChatButton">Stop Chat</button>
+    <br />
+    <div id="avatarPanel">
+        <script type="text/javascript"
+            src="//vhss-d.oddcast.com/vhost_embed_functions_v4.php?acc=7961552&js=0"></script>
+        <script
+            type="text/javascript">AC_VHost_Embed(7961552, 300, 400, '', 1, 0, 2723955, 0, 1, 0, 'a8fa50a0bbb5c16eb585e2ba4dc48495', 0);</script>
+    </div>
     <br />
     <div id="chatDisplay"></div>
     <br />
@@ -84,7 +98,6 @@
     <script src="jsjac.js"></script>
     <script src="dhee-chat-api.js"></script>
     <script>
-
         window.onload = function () {
 
             var dheeChatConfig = {};
@@ -93,6 +106,9 @@
             dheeChatConfig.speechSignalsCanvas = 'soundSignals';
             dheeChatConfig.onIncomingMessage = onMessage;
             dheeChatConfig.onAllBotsBusy = onAllBotsBusy;
+            dheeChatConfig.onDheeSpeechStart = onDheeSpeechStart;
+            dheeChatConfig.onDheeSpeechFinished = onDheeSpeechFinished;
+            dheeChatConfig.startMuted = true;
             window.DheeChatApi = DheeChatApiBuilder.create(jQuery);
             DheeChatApi.init(dheeChatConfig);
             $('#chatDisplay').html("");
@@ -100,10 +116,23 @@
         }
 
         function onMessage(message) {
-            $('#chatDisplay').append("<div class='messageLine leftAlign'> Dhee : " + message + "</div>")
+            if (message.trim().length > 0) {
+                sayText(DheeChatApi.getSpeakableText(message), 5, 1, 7);
+            }
+            setTimeout(function() {
+                $('#chatDisplay').append("<div class='messageLine leftAlign'> Dhee : " + message + "</div>")
+            }, 900)
         }
         function onAllBotsBusy() {
             alert("All bots are busy. Please try later..");
+        }
+        function onDheeSpeechStart() {
+            saySilent(10);
+            console.log("simulating speech");
+        }
+        function onDheeSpeechFinished() {
+            stopSpeech();
+            console.log("stopped simulating speech");
         }
 
         $('#startChatButton').click(function () {
@@ -131,6 +160,10 @@
         $('#stopAsrButton').click(function () {
             DheeChatApi.stopListening();
         });
+
+        function vh_sceneLoaded() {
+
+        }
     </script>
 </body>
 

@@ -1,4 +1,5 @@
-(function ($) {
+window.DheeChatApiBuilder = {};
+window.DheeChatApiBuilder.create = (function ($) {
 
     /*window.JSJAC_ERR_COUNT = 5;*/
 
@@ -69,6 +70,7 @@
             this.developerId = config.developerId ? config.developerId : false;
             this.onDheeSpeechStart = config.onDheeSpeechStart ? config.onDheeSpeechStart : false;
             this.onDheeSpeechFinished = config.onDheeSpeechFinished ? config.onDheeSpeechFinished : false;
+            this.onChatEnded = config.onChatEnded ? config.onChatEnded : false;
 
             if (!config.onIncomingMessage) {
                 throw new Error("Incoming message handler not set !");
@@ -194,8 +196,12 @@
                         DheeChatApi.start(starterInfo);
                     } catch (e) {
                         console.error("Error while starting!", e);
+                        DheeChatApi.onError("Error while starting!" + e.message);
                     }
                 }
+            }).fail(function() {
+                console.error("Error while connection to Dhee to get the Starter params !");
+                DheeChatApi.onError("Connection could not be made.");
             });
         },
 
@@ -268,8 +274,8 @@
                 return;
             }
             this.sendXmppMsg(sValue);
-            dhee_user_provided_value = "";
-            interim_transcript = "";
+            window.dhee_user_provided_value = "";
+            window.interim_transcript = "";
 
             if (window.speechSynthesis) {
                 speechSynthesis.cancel();
@@ -284,7 +290,7 @@
             if (this.isRecording) {
                 console.log("pausing mic");
                 if (window.recognition) {
-                    recognition.stop();
+                    window.recognition.stop();
                 }
                 if (this.audioContext) {
                     this.audioContext.suspend();
@@ -316,7 +322,7 @@
             if (this.isRecording) {
                 console.log("restarting mic");
                 if (window.recognition) {
-                    recognition.stop();
+                    window.recognition.stop();
                 }
                 if (this.audioContext) {
                     this.audioContext.suspend();
@@ -519,7 +525,7 @@
                 }
             }
 
-            function print(text) {
+            function print(text, commandMessage, customCommand) {
                 var messages = text.split("\n");
                 var message;
                 var wholeMessage = '';
@@ -536,7 +542,7 @@
 
                 }
 
-                DheeChatApi.onIncomingMessage(wholeMessage, DheeChatApi.formatIfNeeded(wholeMessage));
+                DheeChatApi.onIncomingMessage(wholeMessage, DheeChatApi.formatIfNeeded(wholeMessage), commandMessage, customCommand);
 
                 if (quitChat == true) {
                     setTimeout(function () {
@@ -553,7 +559,7 @@
                 DheeChatApi.speakAloud(DheeChatApi.getSpeakableText(utterance.text), utterance.id);
             }
             setTimeout(function () {
-                print(utterance.text);
+                print(utterance.text, utterance.commandMessage, utterance.customCommand);
             }, 900);
         },
 
@@ -607,6 +613,9 @@
                 DheeChatApi.errorCorrectionInProgress = false;
             }
             dhee_bosh_connection.send(new JSJaCPresence());
+            setInterval(function() {
+                DheeChatApi.sendXmppMsg("[[HEARTBEAT]]");
+            }, 10000)
         },
 
         handleDisconnected: function () {
@@ -838,7 +847,7 @@
 
 
 
-                window.recognition = new speechRecognitionClass();
+                var recognition = window.recognition = new speechRecognitionClass();
                 recognition.continuous = true;
                 recognition.interimResults = true;
                 recognition.onstart = function () {
@@ -893,7 +902,7 @@
                 };
 
                 recognition.onresult = function (event) {
-                    interim_transcript = '';
+                    window.interim_transcript = '';
                     if (typeof (event.results) == 'undefined') {
                         recognition.onend = null;
                         recognition.stop();
@@ -902,15 +911,15 @@
                     }
                     var isFinal = false;
                     for (var i = event.resultIndex; i < event.results.length; ++i) {
-                        interim_transcript += event.results[i][0].transcript;
+                        window.interim_transcript += event.results[i][0].transcript;
                         if (event.results[i].isFinal) {
                             isFinal = true;
                         }
                     }
-                    var transcript = dhee_user_provided_value;
-                    if (interim_transcript !== '') {
+                    var transcript = window.dhee_user_provided_value;
+                    if (window.interim_transcript !== '') {
                         if (dheeChatWidget.isRecording) {
-                            transcript = dhee_user_provided_value + interim_transcript;
+                            transcript = window.dhee_user_provided_value + window.interim_transcript;
                         }
                     }
                     if (isFinal) {
@@ -994,7 +1003,7 @@
             recognition.lang = recLang;
             recognition.start();
             ignore_onend = false;
-            dhee_user_provided_value = DheeChatApi.inputBox ? DheeChatApi.inputBox.value : "";
+            window.dhee_user_provided_value = DheeChatApi.inputBox ? DheeChatApi.inputBox.value : "";
             dhee_record_start_time = Math.floor(Date.now());
 
             if (canvas) {
@@ -1111,8 +1120,8 @@
                     }
 
                     console.log("Starting new recording.");
-                    dhee_user_provided_value = DheeChatApi.inputBox ? DheeChatApi.inputBox.value : "";
-                    dhee_record_start_time = Math.floor(Date.now());
+                    window.dhee_user_provided_value = DheeChatApi.inputBox ? DheeChatApi.inputBox.value : "";
+                    window.dhee_record_start_time = Math.floor(Date.now());
 
                     dheeChatWidget.activateMicButton();
                     audioContext.resume();
@@ -1280,17 +1289,17 @@
                      * This function is called with the transcription result from the server.
                      */
                     function onTranscription(e) {
-                        interim_transcript = '';
+                        window.interim_transcript = '';
                         var result = JSON.parse(e.data);
                         if (result.alternatives_) {
                             //transcript.current.innerHTML = result.alternatives_[0].transcript_;
-                            interim_transcript += result.alternatives_[0].transcript_;
+                            window.interim_transcript += result.alternatives_[0].transcript_;
                         }
 
 
-                        if (interim_transcript !== '') {
+                        if (window.interim_transcript !== '') {
                             if (dheeChatWidget.isRecording) {
-                                dheeChatWidget.inputBox.value = dhee_user_provided_value + interim_transcript;
+                                dheeChatWidget.inputBox.value = window.dhee_user_provided_value + window.interim_transcript;
                             }
                         }
 
@@ -1347,7 +1356,9 @@
                 delete this.audioContext;
             }
             this.audioVisualization = false;
-
+            if (this.onChatEnded) {
+                this.onChatEnded();
+            }
 
         },
         isConnected: function () {
@@ -1852,4 +1863,4 @@
     }
 
     window.DheeChatApi = DheeChatApi;
-})(window.jQuery);
+});
