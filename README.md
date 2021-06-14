@@ -6,7 +6,7 @@ Download the JS file [dhee-chat-api.js](https://raw.githubusercontent.com/DheeYa
 
 An example for reference is available here https://github.com/DheeYantra/dhee-chatbot-api-js/tree/main/src/main/resources/static
 
-Add the script then to the HTML page where you would want your users to have voice conversations.
+Add the script then to the HTML page where you would want your users to have chat conversations.
 
 Add dependencies : JQuery, JsJac.js
 
