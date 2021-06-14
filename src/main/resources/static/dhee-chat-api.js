@@ -71,6 +71,14 @@ window.DheeChatApiBuilder.create = (function ($) {
             this.onDheeSpeechStart = config.onDheeSpeechStart ? config.onDheeSpeechStart : false;
             this.onDheeSpeechFinished = config.onDheeSpeechFinished ? config.onDheeSpeechFinished : false;
             this.onChatEnded = config.onChatEnded ? config.onChatEnded : false;
+            this.useDheeTTS = config.useDheeTTS ? config.useDheeTTS : false;
+            this.onDemandTTS = config.onDemandTTS ? config.onDemandTTS : false;
+            this.onEscalationNotice = function() {
+                console.log("Escalation Notification.");
+            }
+            if (config.onEscalationNotice) {
+                this.onEscalationNotice = config.onEscalationNotice;
+            }
 
             if (!config.onIncomingMessage) {
                 throw new Error("Incoming message handler not set !");
@@ -97,6 +105,8 @@ window.DheeChatApiBuilder.create = (function ($) {
                 this.inputBox = false;
             }
 
+            this.speechFinishCallbacks = [];
+
             this.enableSpeechSynthesis = function () {
                 this.speak = true;
             }
@@ -106,14 +116,18 @@ window.DheeChatApiBuilder.create = (function ($) {
                 if (DheeChatApi.audioTracks.length > 0) {
                     DheeChatApi.audioTracks.length = 0;
                     var ap = document.getElementById("dhee_tts_output_player");
-                    ap.pause();
+                    if (!ap.paused) {
+                        DheeChatApi.onAudioCancel();
+                        ap.pause();
+                        
+                    }
                 }
                 DheeChatApi.speak = false;
             }
 
             this.changeLanguage = function (lang) {
                 DheeChatApi.sendSwitchLanguageSignal(lang);
-                DheeChatApi.languagePack(lang);
+                //DheeChatApi.languagePack(lang);
             }
 
 
@@ -139,6 +153,10 @@ window.DheeChatApiBuilder.create = (function ($) {
                         if (DheeChatApi.onDheeSpeechFinished) {
                             DheeChatApi.onDheeSpeechFinished();
                         }
+                        if (DheeChatApi.speechFinishCallbacks.length > 0) {
+                            var callback = DheeChatApi.speechFinishCallbacks.shift();
+                            callback.call(window);
+                        }
                     }
                 });
                 ap.addEventListener("play", function (event) {
@@ -147,7 +165,28 @@ window.DheeChatApiBuilder.create = (function ($) {
                     }
                 });
 
+                this.audioPlayer = ap;
+
+                this.onAudioCancel = function (event) {
+                    console.log("pause event on audio player");
+                    if (this.speechFinishCallbacks.length > 0) {
+                        /*console.log("current audio url :[ "+this.src+" ]");
+                        var otherCallbacks = this.speechFinishCallbacks.filter(function(cb) {
+                            console.info("callback url :[", cb.forUrl+"]");
+
+                            return cb.forUrl != DheeChatApi.audioPlayer.src 
+                            });
+                        if (otherCallbacks.length < this.speechFinishCallbacks.length) {
+                            console.info("Removed the callback for current audio");
+                        }
+                        this.speechFinishCallbacks = otherCallbacks;*/
+                        this.speechFinishCallbacks = [];
+                    }
+                };
+                
+                
             }
+
             this.isRecording = false;
             this.initiatePaymentFramework();
 
@@ -252,6 +291,7 @@ window.DheeChatApiBuilder.create = (function ($) {
 
             if (this.isConnected()) {
                 this.speech = false;
+                this.toClose = true;
                 this.sendCloseIntent();
                 setTimeout(function () {
                     DheeChatApi.sendCloseIntent();
@@ -282,7 +322,12 @@ window.DheeChatApiBuilder.create = (function ($) {
                 if (DheeChatApi.audioTracks.length > 0) {
                     DheeChatApi.audioTracks.length = 0;
                     var ap = document.getElementById("dhee_tts_output_player");
-                    ap.pause();
+                    if (!ap.paused) {
+                        DheeChatApi.onAudioCancel();
+                        ap.pause();
+                        
+                    }
+                    
                 }
             }
         },
@@ -503,29 +548,29 @@ window.DheeChatApiBuilder.create = (function ($) {
             var quitChat = false;
             DheeChatApi.dheeUtterance = this.dheeUtterance = utterance = JSON.parse(message);
 
-            if (this.dheeUtterance.conversationId != DheeChatApi.info.conversationId) {
+            if (utterance.conversationId != DheeChatApi.info.conversationId) {
                 console.log("NMC");
                 return;
             }
 
-            if (this.dheeUtterance.commandMessage) {
-                if (this.dheeUtterance.commandMessage == "CLOSE_NOW") {
+            if (utterance.commandMessage) {
+                if (utterance.commandMessage == "CLOSE_NOW") {
                     quitChat = true;
                 }
 
-                if (this.dheeUtterance.commandMessage == "TAKE_PAYMENT") {
-                    DheeChatApi.initiatePayment(this.dheeUtterance);
+                if (utterance.commandMessage == "TAKE_PAYMENT") {
+                    DheeChatApi.initiatePayment(utterance);
                     return;
                 }
 
-                if (this.dheeUtterance.commandMessage == 'CUSTOM' && this.dheeUtterance.customCommand.startsWith("LANGUAGE=")) {
-                    var language = this.dheeUtterance.customCommand.split('=')[1].trim();
+                if (utterance.commandMessage == 'CUSTOM' && utterance.customCommand.startsWith("LANGUAGE=")) {
+                    var language = utterance.customCommand.split('=')[1].trim();
                     DheeChatApi.switchRecognitionLanguage(language);
                     return;
                 }
             }
 
-            function print(text, commandMessage, customCommand) {
+            function print(text, commandMessage, customCommand, currentContext) {
                 var messages = text.split("\n");
                 var message;
                 var wholeMessage = '';
@@ -542,7 +587,8 @@ window.DheeChatApiBuilder.create = (function ($) {
 
                 }
 
-                DheeChatApi.onIncomingMessage(wholeMessage, DheeChatApi.formatIfNeeded(wholeMessage), commandMessage, customCommand);
+                DheeChatApi.onIncomingMessage(wholeMessage, DheeChatApi.formatIfNeeded(wholeMessage), commandMessage,
+                 customCommand, currentContext);
 
                 if (quitChat == true) {
                     setTimeout(function () {
@@ -556,11 +602,14 @@ window.DheeChatApiBuilder.create = (function ($) {
                 }
             }
             if (utterance.text && utterance.text.trim().length > 0) {
-                DheeChatApi.speakAloud(DheeChatApi.getSpeakableText(utterance.text), utterance.id);
+                if (!DheeChatApi.onDemandTTS) {
+                    DheeChatApi.speakAloud(DheeChatApi.getSpeakableText(utterance.text), utterance.id);
+                }
+                
             }
             setTimeout(function () {
-                print(utterance.text, utterance.commandMessage, utterance.customCommand);
-            }, 900);
+                print(utterance.text, utterance.commandMessage, utterance.customCommand, utterance.currentContext);
+            }, 500);
         },
 
         handlePresence: function (oJSJaCPacket) {
@@ -613,13 +662,14 @@ window.DheeChatApiBuilder.create = (function ($) {
                 DheeChatApi.errorCorrectionInProgress = false;
             }
             dhee_bosh_connection.send(new JSJaCPresence());
-            setInterval(function() {
+            DheeChatApi.heartBeatThread = setInterval(function() {
                 DheeChatApi.sendXmppMsg("[[HEARTBEAT]]");
             }, 10000)
         },
 
         handleDisconnected: function () {
             console.info('Disconnected.');
+            clearInterval(DheeChatApi.heartBeatThread);
         },
 
         handleIqVersion: function (iq) {
@@ -697,8 +747,8 @@ window.DheeChatApiBuilder.create = (function ($) {
             str = str.replace(/'/g, "\\'");
             return str;
         },
-        speakAloud: function (message, utteranceId) {
-
+        speakAloud: function (message, utteranceId, onSpeechFinish) {
+            
             if (message.trim().length == 0) {
                 return;
             }
@@ -711,19 +761,38 @@ window.DheeChatApiBuilder.create = (function ($) {
             if (!this.speak) {
                 return;
             }
-            var recLang = dheeChatWidget.langCodes[dheeChatWidget.inputLanguage];
-            if (!recLang) {
-                if (recLang === 'en-IN') {
-                    recLang = 'en-US';
-                } else {
+            
 
-                    console.log(recLang + " not supported in this browser");
-                    $("#dhee_speaker_active_icon").removeClass("iconVisible").addClass("iconInvisible");
-                    $("#dhee_speaker_mute_icon").removeClass("iconVisible").addClass("iconInvisible");
-                    this.speak = false;
-                    return;
+            if (this.useDheeTTS) {
+                console.log("DHEESPEECHAPI speech with lang : " + this.ttsLang);
+                var ap = document.getElementById("dhee_tts_output_player");
+                var audioUrl = this.myServerAddress + "/audio/" + this.info.voiceAssistanceKey + "/get-voice?utteranceId=" + utteranceId;
+                if (!utteranceId) {
+                    audioUrl = this.myServerAddress + "/audio/" + this.info.voiceAssistanceKey + "/get-voice-from-text?utterance=" +
+                    encodeURIComponent(message) + "&language=" + dheeChatWidget.inputLanguage;
                 }
+                this.audioTracks.push(audioUrl);
+                if (this.audioTracks.length == 1) {
+                    ap.src = audioUrl;
+                    ap.muted = false;
+                    try {
+                        ap.play();
+                    } catch (e) {
+                        console.log(' audio player error ' + e);
+                    }
+
+                }
+                if (onSpeechFinish && typeof onSpeechFinish === 'function') {
+                    onSpeechFinish.forUrl = audioUrl;
+                    this.speechFinishCallbacks.push(onSpeechFinish);
+                } else {
+                    console.log("WARNING Speech finish call back is " + typeof onSpeechFinish);
+                }
+                return;
             }
+
+
+            var recLang = dheeChatWidget.langCodes[dheeChatWidget.inputLanguage];
             this.ttsLang = recLang;
             this.tts = window.speechSynthesis;
             var hasVoice = false;
@@ -763,7 +832,7 @@ window.DheeChatApiBuilder.create = (function ($) {
                 }
             }
             if (!hasVoice) {
-
+                console.log("Fallback to DHEESPEECHAPI speech with lang : " + this.ttsLang);
                 var ap = document.getElementById("dhee_tts_output_player");
                 var audioUrl = this.myServerAddress + "/audio/" + this.info.voiceAssistanceKey + "/get-voice?utteranceId=" + utteranceId;
                 this.audioTracks.push(audioUrl);
@@ -802,7 +871,7 @@ window.DheeChatApiBuilder.create = (function ($) {
                     dheeChatWidget.onDheeSpeechFinished();
                 }
             };
-
+            console.log("WSAPI speech with lang : " + this.ttsLang);
             this.tts.speak(msg);
         },
 
@@ -941,7 +1010,13 @@ window.DheeChatApiBuilder.create = (function ($) {
                             if (DheeChatApi.audioTracks.length > 0) {
                                 DheeChatApi.audioTracks.length = 0;
                                 var ap = document.getElementById("dhee_tts_output_player");
-                                ap.pause();
+
+                                if (!ap.paused) {
+                                    DheeChatApi.onAudioCancel();
+                                    ap.pause();
+                                    
+                                }
+
                             }
                         }
                     }
@@ -1053,14 +1128,14 @@ window.DheeChatApiBuilder.create = (function ($) {
             (function audioFunctionSetter() {
 
 
-                DheeChatApi.startRecording = function () {
+                DheeChatApi.stopRecording = function () {
                     if (dheeChatWidget.isRecording) {
                         dheeChatWidget.isRecording = false;
                         window.dispatchEvent(new Event('dhee_rec_pause'));
                     }
                 }
 
-                DheeChatApi.stopRecording = function () {
+                DheeChatApi.startRecording = function () {
                     if (!dheeChatWidget.isRecording) {
                         window.dispatchEvent(new Event('dhee_rec_play'));
                         if (window.speechSynthesis) {
@@ -1068,7 +1143,11 @@ window.DheeChatApiBuilder.create = (function ($) {
                             if (DheeChatApi.audioTracks.length > 0) {
                                 DheeChatApi.audioTracks.length = 0;
                                 var ap = document.getElementById("dhee_tts_output_player");
-                                ap.pause();
+                                if (!ap.paused) {
+                                    DheeChatApi.onAudioCancel();
+                                    ap.pause();
+                                    
+                                }
                             }
                         }
                     }
@@ -1336,6 +1415,8 @@ window.DheeChatApiBuilder.create = (function ($) {
         },
 
         quit: function () {
+
+            this.toClose = true;
             if (window.speechSynthesis) {
                 speechSynthesis.cancel();
             }
@@ -1359,6 +1440,7 @@ window.DheeChatApiBuilder.create = (function ($) {
             if (this.onChatEnded) {
                 this.onChatEnded();
             }
+            clearInterval(this.heartBeatThread);
 
         },
         isConnected: function () {
@@ -1395,6 +1477,7 @@ window.DheeChatApiBuilder.create = (function ($) {
             }
         },
         createLinksWhereApplicable: function (inputText) {
+
             var replacedText, replacePattern1, replacePattern2, replacePattern3;
 
             //URLs starting with http://, https://, or ftp://
@@ -1673,6 +1756,7 @@ window.DheeChatApiBuilder.create = (function ($) {
             }
 
         },
+
         initiatePayment: function (utterance) {
             var context = utterance.currentContext;
             var params = context.params.paymentParams;
