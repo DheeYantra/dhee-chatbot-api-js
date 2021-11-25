@@ -994,6 +994,9 @@ window.DheeChatApiBuilder.create = (function ($) {
                     if (isFinal) {
                         if (dheeChatWidget.autoSend === true) {
                             dheeChatWidget.sendMessage(transcript);
+                            window.dhee_user_provided_value = "";
+                            dheeChatWidget.inputBox.value = "";
+                            return;
                         }
                     }
 
@@ -1001,6 +1004,9 @@ window.DheeChatApiBuilder.create = (function ($) {
                 };
 
                 dheeChatWidget.startListening = function () {
+                    if (dheeChatWidget.toClose) {
+                        return;
+                    }
                     var audioCtx = dheeChatWidget.audioContext;
                     if (!dheeChatWidget.isRecording) {
                         dheeChatWidget.startSTT();
@@ -1025,9 +1031,11 @@ window.DheeChatApiBuilder.create = (function ($) {
                 dheeChatWidget.stopListening = function () {
                     var audioCtx = dheeChatWidget.audioContext;
                     if (dheeChatWidget.isRecording) {
-                        recognition.stop();
-                        audioCtx.suspend();
                         dheeChatWidget.isRecording = false;
+                        recognition.stop();
+                        if (audioCtx) {
+                            audioCtx.suspend();
+                        }
                     }
                 };
             }
@@ -1402,10 +1410,9 @@ window.DheeChatApiBuilder.create = (function ($) {
 
 
         reset: function () {
-            this.clearMessages();
-            sessionStorage.removeItem("dhee_saved_conv");
             this.started = false;
             speechSynthesis.cancel();
+            this.stopListening();
         },
 
 
@@ -1813,18 +1820,6 @@ window.DheeChatApiBuilder.create = (function ($) {
                 } else {
                     (new JSJaCCookie('btype', 'polling')).write();
                 }
-                if (con.suspend) {
-                    this.sendCommandMessage("SUSPEND");
-                    con.suspend();
-                    var savedSession = {
-                        info: me.info,
-                        chatContent: me.messagesPanel.innerHTML,
-                        language: me.language,
-                        userFullName: me.userFullName,
-                        time: Date.now()
-                    }
-                    sessionStorage.setItem("dhee_saved_conv", JSON.stringify(savedSession));
-                }
             }
 
         },
@@ -1947,4 +1942,5 @@ window.DheeChatApiBuilder.create = (function ($) {
     }
 
     window.DheeChatApi = DheeChatApi;
+    return DheeChatApi;
 });
