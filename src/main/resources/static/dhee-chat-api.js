@@ -1,5 +1,7 @@
 window.DheeChatApiBuilder = {};
 window.DheeChatApiBuilder.create = (function ($) {
+    const SAMPLE_RATE = 16000;
+    const SAMPLE_SIZE = 16;
 
     /*window.JSJAC_ERR_COUNT = 5;*/
 
@@ -898,7 +900,7 @@ window.DheeChatApiBuilder.create = (function ($) {
 
             if (this.useGenericSpeechRecognition || !window.speechRecognitionClass) {
                 console.log("Using generic ASR.");
-                this.initializeGenericSpeechRecognition();
+                this.initializeDheeSpeechRecognition(this.info.voiceAssistanceKey);
                 return;
             }
 
@@ -994,6 +996,9 @@ window.DheeChatApiBuilder.create = (function ($) {
                     if (isFinal) {
                         if (dheeChatWidget.autoSend === true) {
                             dheeChatWidget.sendMessage(transcript);
+                            if (DheeChatApi.onUserInputSent) {
+                                DheeChatApi.onUserInputSent();
+                            }
                             window.dhee_user_provided_value = "";
                             dheeChatWidget.inputBox.value = "";
                             return;
@@ -1131,281 +1136,228 @@ window.DheeChatApiBuilder.create = (function ($) {
             this.sendCommandMessage("CUSTOM", { language: language, command: 'SET_LANGUAGE' });
         },
 
-        initializeGenericSpeechRecognition: function () {
-            var dheeChatWidget = this;
-            (function audioFunctionSetter() {
+
+        initializeDheeSpeechRecognition: function (callId) {
+            var dheeChatWidget = DheeWidgetChat = this;
+            var audioContext;
+            var microphoneStreamSource;
+
+            dheeChatWidget.startListening = function () {
+                if (!dheeChatWidget.isRecording) {
+                    dheeChatWidget.isRecording = true;
+                }
+            }
+
+            dheeChatWidget.stopListening = function () {
+                if (dheeChatWidget.isRecording) {
+                    dheeChatWidget.isRecording = false;
+                }
+            }
 
 
-                DheeChatApi.stopRecording = function () {
-                    if (dheeChatWidget.isRecording) {
-                        dheeChatWidget.isRecording = false;
-                        window.dispatchEvent(new Event('dhee_rec_pause'));
+            function newWebsocket(callId) {
+                if (DheeWidgetChat.lastWebSocket) {
+                    var lastWebSocket = DheeWidgetChat.lastWebSocket;
+                    if (lastWebSocket.readyState === lastWebSocket.CONNECTING || lastWebSocket.readyState === lastWebSocket.OPEN) {
+                        return;
                     }
                 }
 
-                DheeChatApi.startRecording = function () {
-                    if (!dheeChatWidget.isRecording) {
-                        window.dispatchEvent(new Event('dhee_rec_play'));
-                        if (window.speechSynthesis) {
-                            speechSynthesis.cancel();
-                            if (DheeChatApi.audioTracks.length > 0) {
-                                DheeChatApi.audioTracks.length = 0;
-                                var ap = document.getElementById("dhee_tts_output_player");
-                                if (!ap.paused) {
-                                    DheeChatApi.onAudioCancel();
-                                    ap.pause();
-                                    
-                                }
+                var audioPromise = navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        echoCancellation: true,
+                        channelCount: 1,
+                        sampleRate: {
+                            ideal: SAMPLE_RATE
+                        },
+                        sampleSize: SAMPLE_SIZE
+                    }
+                });
+
+                var websocketPromise = new Promise(function (resolve, reject) {
+
+                    var chatServer = dheeChatWidget.myServerAddress.replace("http:", "ws:").replace("https:", "wss:");
+
+                    var callConnectionUrl = chatServer + "/asr/";
+
+                    socket = new WebSocket(callConnectionUrl + callId);
+                    socket.binaryType = "arraybuffer";
+                    socket.addEventListener('open', resolve);
+                    socket.addEventListener('error', reject);
+                    return socket;
+
+                });
+
+                Promise.all([audioPromise, websocketPromise]).then(function (values) {
+
+                    var micStream = values[0];
+                    var socket = values[1].target;
+
+                    audioContext = new (window.AudioContext || window.webkitAudioContext)(/*{ sampleRate: 16000 }*/);
+
+                    var websocketProcessorScriptNode = audioContext.createScriptProcessor(8192, 1, 1);
+
+                    const MAX_INT = Math.pow(2, 16 - 1) - 1;
+
+                    function downsample(buffer, fromSampleRate, toSampleRate) {
+                        // buffer is a Float32Array
+                        var sampleRateRatio = Math.round(fromSampleRate / toSampleRate);
+                        var newLength = Math.round(buffer.length / sampleRateRatio);
+
+                        var result = new Float32Array(newLength);
+                        var offsetResult = 0;
+                        var offsetBuffer = 0;
+                        while (offsetResult < result.length) {
+                            var nextOffsetBuffer = Math.round((offsetResult + 1) * sampleRateRatio);
+                            var accum = 0, count = 0;
+                            for (var i = offsetBuffer; i < nextOffsetBuffer && i < buffer.length; i++) {
+                                accum += buffer[i];
+                                count++;
                             }
+                            result[offsetResult] = accum / count;
+                            offsetResult++;
+                            offsetBuffer = nextOffsetBuffer;
                         }
+                        return result;
                     }
-                }
 
-            })();
+                    websocketProcessorScriptNode.addEventListener('audioprocess', function (e) {
 
-            (function audioInit() {
-                // Check for non Web Audio API browsers.
-                if (!(window.AudioContext || window.webkitAudioContext)) {
-                    console.warn("Web Audio isn't available in your browser. SpeechToText won't work.");
-                    return;
-                }
-
-                var canvas = document.getElementById(dheeChatWidget.speechSignalsCanvas);
-
-                if (canvas) {
-                    var canvasContext = canvas.getContext('2d');
-                    const CANVAS_HEIGHT = canvas.height;
-                    const CANVAS_WIDTH = canvas.width;
-                    window.interim_transcript = '';
-
-                    var analyser;
-
-                    function rafCallback(time) {
-                        if (dheeChatWidget.isRecording) {
-                            window.requestAnimationFrame(rafCallback, canvas);
-                        }
-                        dheeChatWidget.paintAudioVisualizerFrame(analyser, CANVAS_WIDTH, CANVAS_HEIGHT, canvasContext);
-                    }
-                }
-
-
-                const SAMPLE_RATE = 16000;
-                const SAMPLE_SIZE = 16;
-
-
-                var audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                dheeChatWidget.audioContext = audioContext;
-
-                function startRecording() {
-
-                    if (dheeChatWidget.lastWebSocket) {
-                        var lastWebSocket = dheeChatWidget.lastWebSocket;
-                        if (lastWebSocket.readyState === lastWebSocket.CONNECTING || lastWebSocket.readyState === lastWebSocket.OPEN) {
-                            console.log("Another websocket on the task. cancelled new recording.");
+                        if (!DheeWidgetChat.isRecording) {
                             return;
                         }
-                    }
-
-                    console.log("Starting new recording.");
-                    window.dhee_user_provided_value = DheeChatApi.inputBox ? DheeChatApi.inputBox.value : "";
-                    window.dhee_record_start_time = Math.floor(Date.now());
-
-                    dheeChatWidget.activateMicButton();
-                    audioContext.resume();
-                    dheeChatWidget.inputBox.focus();
-                    if (canvas) {
-                        if (!dheeChatWidget.audioVisualInitialized) {
-                            dheeChatWidget.audioVisualInitialized = true;
-                            rafCallback();
-                        }
-                    }
-                    var audioPromise;
-                    if (dheeChatWidget.audioPromise) {
-                        audioPromise = dheeChatWidget.audioPromise;
-                    } else {
-                        audioPromise = navigator.mediaDevices.getUserMedia({
-                            audio: {
-                                echoCancellation: true,
-                                channelCount: 1,
-                                sampleRate: {
-                                    ideal: SAMPLE_RATE
-                                },
-                                sampleSize: SAMPLE_SIZE
-                            }
-                        });
-                    }
-
-                    audioPromise.then(function (micStream) {
-                        var microphone;
-                        if (dheeChatWidget.microphone2Rec) {
-                            microphone = dheeChatWidget.microphone2Rec;
-                        } else {
-                            microphone = audioContext.createMediaStreamSource(micStream);
-                            dheeChatWidget.microphone2Rec = microphone;
-                        }
-
-                        if (dheeChatWidget.analyser) {
-                            analyser = dheeChatWidget.analyser;
-                        } else {
-                            analyser = audioContext.createAnalyser();
-                            dheeChatWidget.analyser = analyser;
-                        }
-
-                        microphone.connect(analyser);
-                    }).catch(console.log.bind(console));
-
-                    initWebsocket(audioPromise);
-                }
-
-                if (!playButton.dheeSttAttached) {
-
-                    window.addEventListener('dhee_rec_pause', function (e) {
-                        audioContext.suspend();
-                    });
-                    window.addEventListener('dhee_rec_tempPause', function (e) {
-                        //chatController.tempResetMicButton();
-                    });
-
-                    // The first time you hit play, connect to the microphone
-                    window.addEventListener('dhee_rec_play', startRecording);
-                }
-
-
-                /**
-                 * Hook up event handlers to create / destroy websockets, and audio nodes to
-                 * transmit audio bytes through it.
-                 */
-                function initWebsocket(audioPromise) {
-                    var socket;
-                    var sourceNode;
-
-                    // Create a node that sends raw bytes across the websocket
-                    var scriptNode = audioContext.createScriptProcessor(4096, 1, 1);
-                    // Need the maximum value for 16-bit signed samples, to convert from float.
-                    const MAX_INT = Math.pow(2, 16 - 1) - 1;
-                    scriptNode.addEventListener('audioprocess', function (e) {
                         var floatSamples = e.inputBuffer.getChannelData(0);
-                        // The samples are floats in range [-1, 1]. Convert to 16-bit signed
-                        // integer.
+                        var fromSampleRate = audioContext.sampleRate;
+                        var toSampleRate = 16000;
+                        if (fromSampleRate != toSampleRate) {
+                            console.log("micSamplingRate:" + fromSampleRate + "; Resampling to 16K");
+                            floatSamples = downsample(floatSamples, fromSampleRate, toSampleRate);
+                        }
+
                         socket.send(Int16Array.from(floatSamples.map(function (n) {
                             return n * MAX_INT;
                         })));
                     });
 
-                    function newWebsocket() {
-                        if (dheeChatWidget.lastWebSocket) {
-                            var lastWebSocket = dheeChatWidget.lastWebSocket;
-                            if (lastWebSocket.readyState === lastWebSocket.CONNECTING || lastWebSocket.readyState === lastWebSocket.OPEN) {
-                                return;
-                            }
+                    DheeWidgetChat.websocketProcessorScriptNode = websocketProcessorScriptNode;
+
+
+                    socket.addEventListener('close', function (e) {
+                        console.log("Dhee ASR websocket closed");
+                    });
+                    socket.addEventListener('error', function (e) {
+                        console.log('Error from Dhee ASR websocket', e);
+                    });
+                    socket.addEventListener('message', onTranscription);
+
+                    function sendInitParams() {
+                        var config = {
+                            callKey: DheeWidgetChat.info.voiceAssistanceKey
                         }
-                        var websocketPromise = new Promise(function (resolve, reject) {
-                            var protocol = 'ws://';
-                            if (location.protocol.indexOf("https") !== -1) {
-                                protocol = 'wss://';
-                            }
-                            //var socket = new WebSocket(protocol + location.hostname + ':8085/transcribe');
-                            var socket = new WebSocket('wss://speech2text.dhee.ai/transcribe');
+                        socket.send(JSON.stringify(config));
+                    }
 
-                            socket.addEventListener('open', resolve);
-                            socket.addEventListener('error', reject);
-                            dheeChatWidget.lastWebSocket = socket;
-                        });
+                    function startByteStream(e) {
+                        microphoneStreamSource = audioContext.createMediaStreamSource(micStream);
+                        microphoneStreamSource.connect(websocketProcessorScriptNode);
+                        websocketProcessorScriptNode.connect(audioContext.destination);
+                    }
 
-                        Promise.all([audioPromise, websocketPromise]).then(function (values) {
-                            var micStream = values[0];
-                            socket = values[1].target;
+                    function onTranscription(message) {
 
-                            // If the socket is closed for whatever reason, pause the mic
-                            socket.addEventListener('close', function (e) {
-                                if (!dheeChatWidget.isRecording) {
-                                    console.log('Websocket closing..');
-                                    window.dispatchEvent(new Event('dhee_rec_pause'));
-                                } else {
-                                    if (!dheeChatWidget.micPaused) {
-                                        console.log('restarting again to continue recording.');
-                                        startRecording();
+                        if (typeof message.data === "string") {
+
+                            /*console.log("Got Text: " + message.data);*/
+                            if (message.data == "startStreaming") {
+                                console.log("Starting to stream audio");
+                                dheeChatWidget.dheeAsrInUse = true;
+                                startByteStream();
+                            } else {
+                                var packet = JSON.parse(message.data);
+                                if (packet.status == 0) {
+                                    if (dheeChatWidget.isRecording) {
+                                        if (dheeChatWidget.inputBox) {
+                                            dheeChatWidget.inputBox.value = packet.transcript;
+                                        }
+                                        
                                     }
                                 }
-                            });
-                            socket.addEventListener('error', function (e) {
-                                console.log('Error from websocket', e);
-                                window.dispatchEvent(new Event('dhee_rec_pause'));
-                            });
 
-                            function startByteStream(e) {
-                                // Hook up the scriptNode to the mic
-                                sourceNode = audioContext.createMediaStreamSource(micStream);
-                                sourceNode.connect(scriptNode);
-                                scriptNode.connect(audioContext.destination);
+                                if (packet.status == 1) {
+
+                                    var transcript = packet.transcript;
+                                    if (dheeChatWidget.autoSend === true) {
+                                        console.log("Sending transcription: "+ transcript);
+                                        dheeChatWidget.sendMessage(transcript);
+                                        if (DheeChatApi.onUserInputSent) {
+                                            DheeChatApi.onUserInputSent();
+                                        }
+                                        window.dhee_user_provided_value = "";
+                                        dheeChatWidget.inputBox.value = "";
+                                        return;
+                                    }
+
+                                }
                             }
-
-                            // Send the initial configuration message. When the server acknowledges
-                            // it, start streaming the audio bytes to the server and listening for
-                            // transcriptions.
-                            socket.addEventListener('message', function (e) {
-                                socket.addEventListener('message', onTranscription);
-                                startByteStream(e);
-                            }, { once: true });
-                            var recLang = dheeChatWidget.langCodes[dheeChatWidget.inputLanguage];
-                            socket.send(JSON.stringify({ sampleRate: audioContext.sampleRate, recLang: recLang }));
-
-                        }).catch(console.log.bind(console));
-                    }
-
-                    function closeWebsocket() {
-                        scriptNode.disconnect();
-                        if (sourceNode)
-                            sourceNode.disconnect();
-                        if (socket && socket.readyState === socket.OPEN)
-                            socket.close();
-                    }
-
-                    function toggleWebsocket(e) {
-                        var context = e.target;
-                        if (context.state === 'running') {
-                            newWebsocket();
-                        } else if (context.state === 'suspended') {
-                            setTimeout(function () {
-                                closeWebsocket();
-                            }, 1500);
+                            return;
                         }
                     }
 
-                    /**
-                     * This function is called with the transcription result from the server.
-                     */
-                    function onTranscription(e) {
-                        window.interim_transcript = '';
-                        var result = JSON.parse(e.data);
-                        if (result.alternatives_) {
-                            //transcript.current.innerHTML = result.alternatives_[0].transcript_;
-                            window.interim_transcript += result.alternatives_[0].transcript_;
-                        }
+                    sendInitParams();
 
 
-                        if (window.interim_transcript !== '') {
-                            if (dheeChatWidget.isRecording) {
-                                dheeChatWidget.inputBox.value = window.dhee_user_provided_value + window.interim_transcript;
-                            }
-                        }
+                }).catch(console.log.bind(console));
+            }
 
-                        if (result.isFinal_) {
-                            if (dheeChatWidget.autoSend === true) {
-                                dheeChatWidget.recordButton.onclick();
-                            }
-                        }
-
-
+            function closeWebsocket() {
+                try {
+                    if (socket && socket.readyState === socket.OPEN) {
+                        socket.close();
                     }
-
-                    // When the mic is resumed or paused, change the state of the websocket too
-                    audioContext.addEventListener('statechange', toggleWebsocket);
-                    // initialize for the current state
-                    toggleWebsocket({ target: audioContext });
+                } catch (error) {
+                    console.error(error);
                 }
-            })();
+            }
+
+            function cleanUp() {
+                try {
+                    console.log("cleaning up connections");
+                    if (DheeWidgetChat.websocketProcessorScriptNode) {
+                        DheeWidgetChat.websocketProcessorScriptNode.disconnect();
+                    }
+                    if (microphoneStreamSource) {
+                        microphoneStreamSource.disconnect();
+                    }
+                    if (audioContext && audioContext.state != 'closed') {
+                        audioContext.close();
+                        delete audioContext;
+                    }
+
+                } catch (error) {
+                    console.error(error);
+                }
+            }
+
+            function toggleWebsocket(e) {
+                var context = e.target;
+                if (context.state === 'running') {
+                    newWebsocket();
+                } else if (context.state === 'suspended') {
+                    setTimeout(function () {
+                        closeWebsocket();
+                    }, 1500);
+                }
+            }
+
+            dheeChatWidget.newWebsocket = newWebsocket;
+            dheeChatWidget.stopDheeAsr = function () {
+                cleanUp();
+                closeWebsocket();
+            };
+            dheeChatWidget.setupComplete = true;
+            newWebsocket(callId);
         },
+
 
 
 
