@@ -2,7 +2,7 @@ window.DheeChatApiBuilder = {};
 window.DheeChatApiBuilder.create = (function ($) {
     const SAMPLE_RATE = 16000;
     const SAMPLE_SIZE = 16;
-
+    const MAX_INT = Math.pow(2, 16 - 1) - 1;
     /*window.JSJAC_ERR_COUNT = 5;*/
 
     DheeChatApi = {
@@ -60,9 +60,10 @@ window.DheeChatApiBuilder.create = (function ($) {
             })();
 
             this.myServerAddress = "https://runtime.dhee.ai";
+            //this.myServerAddress = "https://dev-runtime.dhee.net.in";
             this.instanceId = config.instanceId;
             this.startMuted = config.startMuted ? config.startMuted : false;
-            this.useGenericSpeechRecognition = false;
+            this.useGenericSpeechRecognition = config.alwaysUsedDheeAsr ? config.alwaysUsedDheeAsr : false;
             this.autoSend = config.autoSend ? config.autoSend : false;
             this.language = config.language ? config.language : 'ENGLISH';
             this.isRecording = false;
@@ -75,7 +76,13 @@ window.DheeChatApiBuilder.create = (function ($) {
             this.onChatEnded = config.onChatEnded ? config.onChatEnded : false;
             this.useDheeTTS = config.useDheeTTS ? config.useDheeTTS : false;
             this.onDemandTTS = config.onDemandTTS ? config.onDemandTTS : false;
-            this.onEscalationNotice = function() {
+            this.onInterimAudioTranscriptArrival = config.onInterimAudioTranscriptArrival ? config.onInterimAudioTranscriptArrival : false;
+            this.onFinalAudioTranscriptArrival = config.onFinalAudioTranscriptArrival ? config.onFinalAudioTranscriptArrival : false;
+            this.onAutoSend = config.onAutoSend ? config.onAutoSend : false;
+            this.onInteractiveResponse = config.onInteractiveResponse ? config.onInteractiveResponse : false;
+            this.micOn = config.micOn;
+            this.micOff = config.micOff;
+            this.onEscalationNotice = function () {
                 console.log("Escalation Notification.");
             }
             if (config.onEscalationNotice) {
@@ -92,7 +99,7 @@ window.DheeChatApiBuilder.create = (function ($) {
             }
             this.handleNoChatSignal = config.onAllBotsBusy;
 
-            this.onError = config.onError ? config.onError : function(e) {
+            this.onError = config.onError ? config.onError : function (e) {
                 if (e) {
                     console.error(e);
                 } else {
@@ -114,14 +121,16 @@ window.DheeChatApiBuilder.create = (function ($) {
             }
 
             this.disableSpeechSynthesis = function () {
-                speechSynthesis.cancel();
+                if (window.speechSynthesis) {
+                    speechSynthesis.cancel();
+                }
                 if (DheeChatApi.audioTracks.length > 0) {
                     DheeChatApi.audioTracks.length = 0;
                     var ap = document.getElementById("dhee_tts_output_player");
                     if (!ap.paused) {
                         DheeChatApi.onAudioCancel();
                         ap.pause();
-                        
+
                     }
                 }
                 DheeChatApi.speak = false;
@@ -132,10 +141,10 @@ window.DheeChatApiBuilder.create = (function ($) {
                 //DheeChatApi.languagePack(lang);
             }
 
-
             if (!this.audioTracks) {
 
-                var audioTracks = this.audioTracks = [];
+                this.audioTracks = [];
+                this.audioToTextMap = {};
                 var ap = document.getElementById("dhee_tts_output_player");
                 if (!ap) {
                     ap = document.createElement("audio");
@@ -143,27 +152,24 @@ window.DheeChatApiBuilder.create = (function ($) {
                     ap.setAttribute("style", "diplay:none");
                     ap.setAttribute("type", 'audio/mpeg; codecs="mp3"');
                     ap.setAttribute("muted", "true");
+                    ap.setAttribute("crossorigin", "anonymous");
                     document.body.appendChild(ap);
                 }
                 ap.addEventListener("ended", function (event) {
-                    audioTracks.shift();
-                    if (audioTracks.length > 0) {
-                        var nextAudioUrl = audioTracks[0];
+                    DheeChatApi.audioTracks.shift();
+                    if (DheeChatApi.audioTracks.length > 0) {
+                        var nextAudioUrl = DheeChatApi.audioTracks[0];
+                        var text = DheeChatApi.audioToTextMap[nextAudioUrl];
+                        if (DheeChatApi.inputBox !== false) {
+                            DheeChatApi.inputBox.innerText = text;
+                        }
                         ap.src = nextAudioUrl;
                         ap.play();
                     } else {
-                        if (DheeChatApi.onDheeSpeechFinished) {
-                            DheeChatApi.onDheeSpeechFinished();
-                        }
                         if (DheeChatApi.speechFinishCallbacks.length > 0) {
                             var callback = DheeChatApi.speechFinishCallbacks.shift();
                             callback.call(window);
                         }
-                    }
-                });
-                ap.addEventListener("play", function (event) {
-                    if (DheeChatApi.onDheeSpeechStart) {
-                        DheeChatApi.onDheeSpeechStart();
                     }
                 });
 
@@ -172,21 +178,57 @@ window.DheeChatApiBuilder.create = (function ($) {
                 this.onAudioCancel = function (event) {
                     console.log("pause event on audio player");
                     if (this.speechFinishCallbacks.length > 0) {
-                        /*console.log("current audio url :[ "+this.src+" ]");
-                        var otherCallbacks = this.speechFinishCallbacks.filter(function(cb) {
-                            console.info("callback url :[", cb.forUrl+"]");
-
-                            return cb.forUrl != DheeChatApi.audioPlayer.src 
-                            });
-                        if (otherCallbacks.length < this.speechFinishCallbacks.length) {
-                            console.info("Removed the callback for current audio");
-                        }
-                        this.speechFinishCallbacks = otherCallbacks;*/
                         this.speechFinishCallbacks = [];
                     }
                 };
-                
-                
+            } else {
+                this.audioTracks = [];
+                this.audioToTextMap = [];
+            }
+
+            if (!DheeChatApi.silenceDetectionInitialised && !window.analyserSource) {
+                let sampleSize = 2048;
+                let audioPlayer = document.getElementById("dhee_tts_output_player");
+                let analyserContext = new AudioContext();
+                let analyser = analyserContext.createAnalyser();
+                let analyserJsNode = analyserContext.createScriptProcessor(sampleSize, 1, 1);
+                let amplitudeArray = new Uint8Array(analyser.frequencyBinCount);
+                let analyserSource = analyserContext.createMediaElementSource(audioPlayer);
+                window.analyserSource = analyserSource;
+                analyserSource.connect(analyser);
+                analyser.connect(analyserJsNode);
+                analyser.connect(analyserContext.destination);
+                analyserJsNode.connect(analyserContext.destination);
+                let silenceThreshold = 2000;
+                let speaking = false;
+                let silenceWindow = 0;
+                let speakingWindow = 0;
+                analyserJsNode.onaudioprocess = function () {
+                    analyser.getByteTimeDomainData(amplitudeArray);
+                    let sum = 0;
+                    for (let i in amplitudeArray) {
+                        sum += Math.abs(128 - amplitudeArray[i]);
+                    }
+                    if (sum < silenceThreshold) {
+                        silenceWindow++;
+                        if (/*silenceWindow > 5 && */ speaking) {
+                            speaking = false;
+                            if (DheeChatApi.onDheeSpeechFinished) {
+                                DheeChatApi.onDheeSpeechFinished();
+                            }
+                            //console.log("silent(2048)");
+
+                        }
+                    } else if (!speaking) {
+                        speaking = true;
+                        if (DheeChatApi.onDheeSpeechStart) {
+                            DheeChatApi.onDheeSpeechStart();
+                        }
+                        silenceWindow = 0;
+                        //console.log("speaking");
+                    }
+                };
+                DheeChatApi.silenceDetectionInitialised = true;
             }
 
             this.isRecording = false;
@@ -240,7 +282,7 @@ window.DheeChatApiBuilder.create = (function ($) {
                         DheeChatApi.onError("Error while starting!" + e.message);
                     }
                 }
-            }).fail(function() {
+            }).fail(function () {
                 console.error("Error while connection to Dhee to get the Starter params !");
                 DheeChatApi.onError("Connection could not be made.");
             });
@@ -254,7 +296,6 @@ window.DheeChatApiBuilder.create = (function ($) {
             this.launchedOnce = true;
 
             this.info = info;
-            this.myServerAddress = "https://runtime.dhee.ai";
             this.inputLanguage = this.language;
 
             var audioAnalyticsDisplay = document.getElementById(this.speechSignalsCanvas);
@@ -268,7 +309,7 @@ window.DheeChatApiBuilder.create = (function ($) {
             }
             var chatServer = DheeChatApi.myServerAddress;
             chatServer = chatServer.replace("http:", "ws:").replace("https:", "wss:");
-            var chatContextPath = '/live-chat/ws'
+            var chatContextPath = '/text-chat/dm-ws'
 
             var connectionConfig = {
                 userName: info.handlerJid,
@@ -281,7 +322,8 @@ window.DheeChatApiBuilder.create = (function ($) {
             DheeChatApi.connectChat(connectionConfig);
 
             console.log('initialzing speech recognition');
-            this.initializeSpeechRecognition();
+            this.initializeSpeechRecognition(this.info.voiceAssistanceKey);
+
             this.speak = false;
 
             if (!this.startMuted) {
@@ -291,17 +333,35 @@ window.DheeChatApiBuilder.create = (function ($) {
 
         endChat: function () {
 
-            if (this.isConnected()) {
-                this.speech = false;
-                this.toClose = true;
-                this.sendCloseIntent();
-                setTimeout(function () {
-                    DheeChatApi.sendCloseIntent();
-                }, 100);
+            try {
 
-            } else {
-                DheeChatApi.quit();
+                var ap = document.getElementById("dhee_tts_output_player");
+                if (!ap.paused) {
+                    DheeChatApi.onAudioCancel();
+                    ap.pause();
+
+                }
+
+                DheeChatApi.stopListening();
+
+                if (this.isConnected()) {
+                    this.speech = false;
+                    this.toClose = true;
+                    this.sendCloseIntent();
+                    setTimeout(function () {
+                        DheeChatApi.sendCloseIntent();
+                        DheeChatApi.quit();
+                    }, 100);
+
+                } else {
+                    DheeChatApi.quit();
+                }
+
+            } catch (error) {
+                console.warn("Ignoring errors occured during close of chat");
             }
+
+
         },
 
         sendMessage: function (message) {
@@ -315,7 +375,7 @@ window.DheeChatApiBuilder.create = (function ($) {
             if (!sValue || sValue.trim().length == 0) {
                 return;
             }
-            this.sendXmppMsg(sValue);
+            this.sendWsMessage(sValue);
             window.dhee_user_provided_value = "";
             window.interim_transcript = "";
 
@@ -327,90 +387,63 @@ window.DheeChatApiBuilder.create = (function ($) {
                     if (!ap.paused) {
                         DheeChatApi.onAudioCancel();
                         ap.pause();
-                        
-                    }
-                    
-                }
-            }
-        },
-        pauseMic: function (temp) {
-            if (this.isRecording) {
-                console.log("pausing mic");
-                if (window.recognition) {
-                    window.recognition.stop();
-                }
-                if (this.audioContext) {
-                    this.audioContext.suspend();
-                }
-                if (temp) {
-                    //this.recordButton.dispatchEvent(new Event('tempPause'));
-                    //this.tempResetMicButton();
-                } else {
-                    this.recordButton.dispatchEvent(new Event('pause'));
-                    console.log("ASR ended.");
-                }
-            } else {
-                console.log("No need to pause mic. Not recording");
-            }
-        },
-        resumeMic: function () {
-            if (this.isRecording) {
-                console.log("resuming mic");
-                this.startSTT();
-                this.isRecording = true;
-                if (this.useGenericSpeechRecognition === true) {
-                    //TODO
-                }
-            } else {
-                console.log("Mic resume cancelled as recording not in progress.");
-            }
-        },
-        restartMic: function () {
-            if (this.isRecording) {
-                console.log("restarting mic");
-                if (window.recognition) {
-                    window.recognition.stop();
-                }
-                if (this.audioContext) {
-                    this.audioContext.suspend();
-                }
-                var widget = this;
-                setTimeout(function () {
-                    widget.startSTT();
-                }, 100)
 
-            } else {
-                console.log("No need to restart mic. Not recording");
+                    }
+
+                }
             }
         },
+
         sendThisMessage: function (mesg) {
             if (!mesg || mesg.trim() == "") {
                 return;
             }
             var sValue = mesg;
-            this.sendXmppMsg(sValue);
+            this.sendWsMessage(sValue);
         },
-        sendXmppMsg: function (messageText) {
-            if (messageText == '') {
+        sendWsMessage: function (messageText) {
+            var utterance = this.getUtteranceObject(messageText);
+            if (utterance === false) {
+                return;
+            }
+            this.chatSocket.send(JSON.stringify(utterance));
+        },
+
+        sendCommandMessage: function (command, contextParams) {
+            try {
+                var utterance = this.getUtteranceObject(null, command, contextParams);
+                this.chatSocket.send(JSON.stringify(utterance));
+                return true;
+            } catch (e) {
+                console.error(e);
                 return false;
             }
-            var allText = messageText;
-            if (this.language === "ENGLISH") {
-                allText = messageText.trim();
-            }
-            var node = '';
-            var firstSpaceIndex = -1;
-            var messageText = "";
-            if (allText.startsWith('@')) {
-                firstSpaceIndex = allText.indexOf(' ');
-                node = allText.substring(1, firstSpaceIndex);
-            }
 
-            if (node == '') {
-                node = 'dhee';
+        },
+
+        getUtteranceObject: function (messageText, command, contextParams) {
+            if (messageText == '' && !command) {
+                return false;
             }
-            var addressee = node + '@dheeyantra.com';
-            messageText = allText.substring(firstSpaceIndex, allText.length);
+            if (messageText) {
+                var allText = messageText;
+                if (this.language === "ENGLISH") {
+                    allText = messageText.trim();
+                }
+                var node = '';
+                var firstSpaceIndex = -1;
+                var messageText = "";
+                if (allText.startsWith('@')) {
+                    firstSpaceIndex = allText.indexOf(' ');
+                    node = allText.substring(1, firstSpaceIndex);
+                }
+
+                if (node == '') {
+                    node = 'dhee';
+                }
+                var addressee = node + '@dheeyantra.com';
+                messageText = allText.substring(firstSpaceIndex, allText.length);
+            }
 
             try {
 
@@ -427,51 +460,26 @@ window.DheeChatApiBuilder.create = (function ($) {
                     utterance.commandMessage = "CLOSE";
                     utterance.text = "[CMD]";
                 }
-                var oMsg = new JSJaCMessage();
-                //oForm.sendTo.value
-                oMsg.setTo(new JSJaCJID(addressee));
-                oMsg.setBody(JSON.stringify(utterance));
-                oMsg.setSubject(this.info.conversationId);
-                dhee_bosh_connection.send(oMsg);
-                return false;
-
-            } catch (e) {
-                console.log(e.message);
-                return false;
-            }
-        },
-
-        sendCommandMessage: function (command, contextParams) {
-            try {
-
-                var utterance = new Object();
-                utterance.commandMessage = command;
-                utterance.text = "[CMD]";
-                utterance.conversationId = this.info.conversationId;
-                utterance.projectId = this.info.projectId;
-                utterance.userId = this.info.userId;
-                utterance.incoming = true;
+                if (command) {
+                    utterance.commandMessage = command;
+                }
                 if (contextParams) {
                     utterance.currentContext = { params: contextParams };
                 }
-                var oMsg = new JSJaCMessage();
-                //oForm.sendTo.value
-                oMsg.setTo(new JSJaCJID('dhee@dheeyantra.com'));
-                oMsg.setBody(JSON.stringify(utterance));
-                oMsg.setSubject(this.info.conversationId);
-                dhee_bosh_connection.send(oMsg);
-                return true;
+
+                utterance.sourceJID = this.info.handlerJid;
+
+                return utterance;
 
             } catch (e) {
-                console.log(e.message);
+                console.error(e);
                 return false;
             }
-
         },
+
 
         sendCustomCommandMessage: function (customCommand, contextParams) {
             try {
-
                 var utterance = new Object();
                 utterance.commandMessage = 'CUSTOM';
                 utterance.customCommand = customCommand;
@@ -483,16 +491,12 @@ window.DheeChatApiBuilder.create = (function ($) {
                 if (contextParams) {
                     utterance.currentContext = { params: contextParams };
                 }
-                var oMsg = new JSJaCMessage();
-                //oForm.sendTo.value
-                oMsg.setTo(new JSJaCJID('dhee@dheeyantra.com'));
-                oMsg.setBody(JSON.stringify(utterance));
-                oMsg.setSubject(this.info.conversationId);
-                dhee_bosh_connection.send(oMsg);
+
+                this.chatSocket.send(JSON.stringify(utterance));
                 return true;
 
             } catch (e) {
-                console.log(e.message);
+                console.error(e);
                 return false;
             }
 
@@ -538,14 +542,8 @@ window.DheeChatApiBuilder.create = (function ($) {
             return res;
         },
 
-        handleIQ: function (oIQ) {
-            dhee_bosh_connection.send(oIQ.errorReply(ERR_FEATURE_NOT_IMPLEMENTED));
-        },
 
-        handleMessage: function (oJSJaCPacket) {
-            var html = '';
-            var sender = oJSJaCPacket.getFromJID().getNode();
-            var message = oJSJaCPacket.getBody();
+        handleMessage: function (message) {
             var utterance;
             var quitChat = false;
             DheeChatApi.dheeUtterance = this.dheeUtterance = utterance = JSON.parse(message);
@@ -556,9 +554,6 @@ window.DheeChatApiBuilder.create = (function ($) {
             }
 
             if (utterance.commandMessage) {
-                if (utterance.commandMessage == "CLOSE_NOW") {
-                    quitChat = true;
-                }
 
                 if (utterance.commandMessage == "TAKE_PAYMENT") {
                     DheeChatApi.initiatePayment(utterance);
@@ -572,46 +567,64 @@ window.DheeChatApiBuilder.create = (function ($) {
                 }
             }
 
-            function print(text, commandMessage, customCommand, currentContext) {
-                var messages = text.split("\n");
-                var message;
-                var wholeMessage = '';
-                for (var i = 0; i < messages.length; i++) {
-                    message = messages[i];
-                    if (message == '') {
-                        continue;
-                    }
-                    message = DheeChatApi.htmlEncode(message);
-                    if (wholeMessage.length > 0) {
-                        wholeMessage += "<br/>"
-                    }
-                    wholeMessage += message;
 
-                }
-
-                DheeChatApi.onIncomingMessage(wholeMessage, DheeChatApi.formatIfNeeded(wholeMessage), commandMessage,
-                 customCommand, currentContext);
-
-                if (quitChat == true) {
-                    setTimeout(function () {
-                        DheeChatApi.quit();
-                    }, 108);
-                }
-
-                if (DheeChatApi.dheeUtterance.commandMessage == "ESCLN_NOTICE") {
-                    DheeChatApi.onEscalationNotice();
-
-                }
-            }
             if (utterance.text && utterance.text.trim().length > 0) {
                 if (!DheeChatApi.onDemandTTS) {
+                    console.log("Speaking aloud text:" + utterance.text);
                     DheeChatApi.speakAloud(DheeChatApi.getSpeakableText(utterance.text), utterance.id);
                 }
-                
+
             }
             setTimeout(function () {
-                print(utterance.text, utterance.commandMessage, utterance.customCommand, utterance.currentContext);
+                DheeChatApi.print(utterance.text, utterance.commandMessage, utterance.customCommand, utterance.currentContext);
             }, 500);
+        },
+
+        print: function (text, commandMessage, customCommand, currentContext) {
+            var quitChat = false;
+            if (commandMessage == "CLOSE_NOW") {
+                quitChat = true;
+            }
+            var messages = text.split("\n");
+            var message;
+            var wholeMessage = '';
+            for (var i = 0; i < messages.length; i++) {
+                message = messages[i];
+                if (message == '') {
+                    continue;
+                }
+                message = DheeChatApi.htmlEncode(message);
+                if (wholeMessage.length > 0) {
+                    wholeMessage += "<br/>"
+                }
+                wholeMessage += message;
+
+            }
+
+
+            DheeChatApi.onIncomingMessage(wholeMessage, DheeChatApi.formatIfNeeded(wholeMessage), commandMessage,
+                customCommand, currentContext);
+            var quitTrials = 0;
+            function quitWhenSpeechIsCompleted() {
+                if (DheeChatApi.audioTracks.length == 0) {
+                    DheeChatApi.quit();
+                } else {
+                    quitTrials++;
+                    if (quitTrials < 6) {
+                        setTimeout(quitWhenSpeechIsCompleted, 900);
+                    } else {
+                        DheeChatApi.quit();
+                    }
+                }
+            }
+            if (quitChat === true) {
+                quitWhenSpeechIsCompleted();
+            }
+
+            if (DheeChatApi.dheeUtterance.commandMessage == "ESCLN_NOTICE") {
+                DheeChatApi.onEscalationNotice();
+
+            }
         },
 
         handlePresence: function (oJSJaCPacket) {
@@ -649,23 +662,25 @@ window.DheeChatApiBuilder.create = (function ($) {
             this.connectChat(this.connectionConfig);
         },
 
-        handleStatusChanged: function (status) {
-            console.log("status changed: " + status);
+        connectChat: function (data) {
+            this.connectionData = data;
+            let websocket = this.chatSocket = new WebSocket(data.httpBase);
+            this.setupWsCon(websocket);
+
         },
 
         handleConnected: function () {
 
             if (!DheeChatApi.errorCorrectionInProgress) {
-                DheeChatApi.sendXmppMsg("$dhee_init$");
+                DheeChatApi.sendWsMessage("$dhee_init$");
                 DheeChatApi.toClose = false;
             } else {
                 clearInterval(DheeChatApi.reconnectingThread);
                 log.info('ReConnected! (You may have to re-enter your last message though.)');
                 DheeChatApi.errorCorrectionInProgress = false;
             }
-            dhee_bosh_connection.send(new JSJaCPresence());
-            DheeChatApi.heartBeatThread = setInterval(function() {
-                DheeChatApi.sendXmppMsg("[[HEARTBEAT]]");
+            DheeChatApi.heartBeatThread = setInterval(function () {
+                DheeChatApi.sendWsMessage("[[HEARTBEAT]]");
             }, 10000)
         },
 
@@ -674,67 +689,42 @@ window.DheeChatApiBuilder.create = (function ($) {
             clearInterval(DheeChatApi.heartBeatThread);
         },
 
-        handleIqVersion: function (iq) {
-            dhee_bosh_connection.send(iq.reply([iq.buildNode('name', 'jsjac simpleclient'), iq.buildNode('version', JSJaC.Version), iq.buildNode('os', navigator.userAgent)]));
-            return true;
-        },
-
-        handleIqTime: function (iq) {
-            var now = new Date();
-            dhee_bosh_connection.send(iq.reply([iq.buildNode('display', now.toLocaleString()), iq.buildNode('utc', now.jabberDate()), iq.buildNode('tz', now.toLocaleString().substring(now.toLocaleString().lastIndexOf(' ') + 1))]));
-            return true;
-        },
-        connectChat: function (data) {
-            this.connectionData = data;
-            try {
-                if (data.httpBase.substr(0, 5) === 'ws://' || data.httpBase.substr(0, 6) === 'wss://') {
-                    dhee_bosh_connection = new JSJaCWebSocketConnection({
-                        httpbase: data.httpBase,
-                        console: console
-                    });
-                } else {
-                    dhee_bosh_connection = new JSJaCHttpBindingConnection({
-                        httpbase: data.httpBase,
-                        console: console
-                    });
-                }
-
-                this.setupCon(dhee_bosh_connection);
-
-                // setup args for connect method
-                oArgs = new Object();
-                oArgs.domain = data.domain;
-                oArgs.username = data.userName;
-                if (this.errorCorrectionInProgress) {
-                    oArgs.resource = this.connectionData.prevResource;
-                } else {
-                    oArgs.resource = 'dhee_widget';
-                }
-                this.connectionData.prevResource = oArgs.resource;
-                oArgs.pass = data.password;//$.cookie("login_p");
-                oArgs.register = false;
-                this.userFullName = data.userFullName;
-                dhee_bosh_connection.connect(oArgs);
-            } catch (e) {
-                console.log("Error while connecting :" + e.toString());
-                this.onError(e.toString());
-
-            } finally {
-                return false;
+        handleError: function (e) {
+            if (!e) {
+                e = "unknown";
             }
-
+            console.error("Error : " + e);
+            var errorMessage = "Network error. connection broken! ";
+            console.error(errorMessage);
+            DheeChatApi.onError(e);
+            DheeChatApi.quit();
         },
-        setupCon: function (oCon) {
-            oCon.registerHandler('message', this.handleMessage);
-            oCon.registerHandler('presence', this.handlePresence);
-            oCon.registerHandler('iq', this.handleIQ);
-            oCon.registerHandler('onconnect', this.handleConnected);
-            oCon.registerHandler('onerror', this.handleError);
-            oCon.registerHandler('status_changed', this.handleStatusChanged);
-            oCon.registerHandler('ondisconnect', this.handleDisconnected);
 
-            oCon.registerIQGet('query', NS_VERSION, this.handleIqVersion);
-            oCon.registerIQGet('query', NS_TIME, this.handleIqTime);
+        setupWsCon: function (socket) {
+
+            socket.onopen = function () {
+                console.log('Connected to Text Chat WebSocket server');
+                DheeChatApi.handleConnected();
+            };
+
+            socket.onmessage = function (event) {
+                console.log('Received:', event.data);
+                var message = event.data;
+                DheeChatApi.handleMessage(message);
+            };
+
+            socket.onclose = function () {
+                console.log('Disconnected from WebSocket server');
+                DheeChatApi.handleDisconnected();
+            };
+
+            socket.onerror = function (webSocketError) {
+                console.log('WebSocket Error:', webSocketError);
+                if (!webSocketError) {
+                    webSocketError = "unknown";
+                }
+                DheeChatApi.handleError(webSocketError);
+            };
         },
         capitalizeFirstLetter: function (string) {
             return string.charAt(0).toUpperCase() + string.slice(1);
@@ -750,149 +740,296 @@ window.DheeChatApiBuilder.create = (function ($) {
             return str;
         },
         speakAloud: function (message, utteranceId, onSpeechFinish) {
-            
+
             if (message.trim().length == 0) {
                 return;
             }
 
             if (!window.speechSynthesis) {
-                return;
+                this.useDheeTTS = true;
             }
 
             var dheeChatWidget = this;
             if (!this.speak) {
                 return;
             }
-            
+            if (this.stopListening) {
+                this.stopListening();
+            }
 
-            if (this.useDheeTTS) {
-                console.log("DHEESPEECHAPI speech with lang : " + this.ttsLang);
-                var ap = document.getElementById("dhee_tts_output_player");
-                var audioUrl = this.myServerAddress + "/audio/" + this.info.voiceAssistanceKey + "/get-voice?utteranceId=" + utteranceId;
-                if (!utteranceId) {
-                    audioUrl = this.myServerAddress + "/audio/" + this.info.voiceAssistanceKey + "/get-voice-from-text?utterance=" +
+
+
+
+            console.log("DHEESPEECHAPI speech with lang : " + this.ttsLang);
+            var ap = document.getElementById("dhee_tts_output_player");
+            var audioUrl = this.myServerAddress + "/audio/" + this.info.voiceAssistanceKey + "/get-voice?useDheeTTS=false&utteranceId=" + utteranceId;
+            if (!utteranceId) {
+                audioUrl = this.myServerAddress + "/audio/" + this.info.voiceAssistanceKey + "/get-voice-from-text?useDheeTTS=false&utterance=" +
                     encodeURIComponent(message) + "&language=" + dheeChatWidget.inputLanguage;
+            }
+            this.audioTracks.push(audioUrl);
+            this.audioToTextMap[audioUrl] = message;
+            if (this.audioTracks.length == 1) {
+                ap.src = audioUrl;
+                ap.muted = false;
+                if (this.inputBox !== false) {
+                    this.inputBox.innerText = message;
                 }
-                this.audioTracks.push(audioUrl);
-                if (this.audioTracks.length == 1) {
-                    ap.src = audioUrl;
-                    ap.muted = false;
+                try {
+                    ap.play();
+                } catch (e) {
+                    console.log(' audio player error ' + e);
+                }
+
+            }
+            if (onSpeechFinish && typeof onSpeechFinish === 'function') {
+                onSpeechFinish.forUrl = audioUrl;
+                this.speechFinishCallbacks.push(onSpeechFinish);
+            } else {
+                console.log("WARNING Speech finish call back is " + typeof onSpeechFinish);
+            }
+            return;
+        },
+
+
+        switchRecognitionLanguage: function (language) {
+            console.log("Changing language to " + language);
+            this.inputLanguage = language;
+            //TODO:Send langauge to Dhee ASR
+        },
+
+        sendSwitchLanguageSignal: function (language) {
+            console.log("Sending change language signal to " + language);
+            this.sendCommandMessage("CUSTOM", { language: language, command: 'SET_LANGUAGE' });
+        },
+
+
+        initializeDheeSpeechRecognition: function (callId) {
+            var dheeChatWidget = DheeWidgetChat = this;
+            var audioContext;
+            var microphoneStreamSource;
+            this.callId = callId;
+            var dheeAsrSocket = true;
+
+            dheeChatWidget.startListening = function () {
+                dheeChatWidget.disableSpeechSynthesis();
+                if (!dheeChatWidget.isRecording) {
+                    dheeChatWidget.isRecording = true;
+                }
+                try {
+                    newWebsocket(this.callId);
+                } catch (error) {
+                    console.error("Error intiating ASR websocket:", error);
+                }
+
+                if (dheeChatWidget.micOn) {
+                    dheeChatWidget.micOn();
+                }
+                //TODO: Remove the below enabling after implementing silenceWindowBuffer
+                dheeChatWidget.enableSpeechSynthesis();
+            }
+
+            dheeChatWidget.stopListening = function () {
+                dheeChatWidget.enableSpeechSynthesis();
+                dheeChatWidget.isRecording = false;
+                closeWebsocket();
+                cleanUp();
+                if (dheeChatWidget.micOff) {
+                    dheeChatWidget.micOff();
+                }
+            }
+
+
+            function newWebsocket(callId) {
+                if (DheeWidgetChat.lastWebSocket) {
+                    var lastWebSocket = DheeWidgetChat.lastWebSocket;
+                    if (lastWebSocket.readyState === lastWebSocket.CONNECTING || lastWebSocket.readyState === lastWebSocket.OPEN) {
+                        return;
+                    }
+                }
+
+                var audioPromise = navigator.mediaDevices.getUserMedia({
+                    /*audio: {
+                        echoCancellation: true,
+                        channelCount: 1,
+                        sampleRate: {
+                            ideal: SAMPLE_RATE
+                        },
+                        sampleSize: SAMPLE_SIZE
+                    }*/
+                    audio: true
+                });
+
+                audioPromise.then(function (value) {
                     try {
-                        ap.play();
-                    } catch (e) {
-                        console.log(' audio player error ' + e);
-                    }
+                        let micStream = value;
+                        audioContext = new (window.AudioContext || window.webkitAudioContext)(/*{ sampleRate: 16000 }*/);
 
-                }
-                if (onSpeechFinish && typeof onSpeechFinish === 'function') {
-                    onSpeechFinish.forUrl = audioUrl;
-                    this.speechFinishCallbacks.push(onSpeechFinish);
-                } else {
-                    console.log("WARNING Speech finish call back is " + typeof onSpeechFinish);
-                }
-                return;
-            }
+                        var websocketProcessorScriptNode = audioContext.createScriptProcessor(8192, 1, 1);
+                        DheeWidgetChat.websocketProcessorScriptNode = websocketProcessorScriptNode;
 
+                        function downsample(buffer, fromSampleRate, toSampleRate) {
+                            // buffer is a Float32Array
+                            var sampleRateRatio = Math.round(fromSampleRate / toSampleRate);
+                            var newLength = Math.round(buffer.length / sampleRateRatio);
 
-            var recLang = dheeChatWidget.langCodes[dheeChatWidget.inputLanguage];
-            this.ttsLang = recLang;
-            this.tts = window.speechSynthesis;
-            var hasVoice = false;
-            var msg = new SpeechSynthesisUtterance();
-            var voices = window.speechSynthesis.getVoices();
-            var numVoices = 0;
-            var lastFoundVoice;
-            for (var v in voices) {
-                if (voices[v].lang === this.ttsLang) {
-                    if (dheeChatWidget.isFemaleVoice(voices[v].name)) {
-                        msg.voice = voices[v];
-                        hasVoice = true;
-                        break;
-                    }
-                    numVoices++;
-                    lastFoundVoice = voices[v];
-                }
-            }
-            if (!hasVoice && recLang === 'en-IN') {
-                this.ttsLang = recLang = 'en-US';
-                for (var v in voices) {
-                    if (voices[v].lang === this.ttsLang) {
-                        if (dheeChatWidget.isFemaleVoice(voices[v].name)) {
-                            msg.voice = voices[v];
-                            hasVoice = true;
-                            break;
+                            var result = new Float32Array(newLength);
+                            var offsetResult = 0;
+                            var offsetBuffer = 0;
+                            while (offsetResult < result.length) {
+                                var nextOffsetBuffer = Math.round((offsetResult + 1) * sampleRateRatio);
+                                var accum = 0, count = 0;
+                                for (var i = offsetBuffer; i < nextOffsetBuffer && i < buffer.length; i++) {
+                                    accum += buffer[i];
+                                    count++;
+                                }
+                                result[offsetResult] = accum / count;
+                                offsetResult++;
+                                offsetBuffer = nextOffsetBuffer;
+                            }
+                            return result;
                         }
-                        numVoices++;
-                        lastFoundVoice = voices[v];
+
+                        var chatServer = dheeChatWidget.myServerAddress.replace("http:", "ws:").replace("https:", "wss:");
+                        var callConnectionUrl = chatServer + "/asr/";
+                        dheeAsrSocket = new WebSocket(callConnectionUrl + callId);
+                        dheeAsrSocket.binaryType = "arraybuffer";
+
+                        websocketProcessorScriptNode.addEventListener('audioprocess', function (e) {
+
+                            if (!DheeWidgetChat.isRecording) {
+                                return;
+                            }
+                            var floatSamples = e.inputBuffer.getChannelData(0);
+                            var fromSampleRate = audioContext.sampleRate;
+                            var toSampleRate = 16000;
+                            if (fromSampleRate != toSampleRate) {
+                                console.log("micSamplingRate:" + fromSampleRate + "; Resampling to 16K");
+                                floatSamples = downsample(floatSamples, fromSampleRate, toSampleRate);
+                            }
+
+                            dheeAsrSocket.send(Int16Array.from(floatSamples.map(function (n) {
+                                return n * MAX_INT;
+                            })));
+                        });
+
+
+                        function startByteStream(e) {
+                            microphoneStreamSource = audioContext.createMediaStreamSource(micStream);
+                            microphoneStreamSource.connect(websocketProcessorScriptNode);
+                            websocketProcessorScriptNode.connect(audioContext.destination);
+                        }
+
+                        function onAsrWebsocketConnected(connectionEvent) {
+                            let asrSocket = connectionEvent.target;
+                            var config = {
+                                callKey: DheeWidgetChat.info.voiceAssistanceKey
+                            }
+                            asrSocket.send(JSON.stringify(config));
+                        }
+
+                        function onAsrSocketMessage(message) {
+                            console.log("got message on ASR websocket")
+                            if (typeof message.data === "string") {
+
+                                console.log("Got Text: " + message.data);
+                                if (message.data == "startStreaming") {
+                                    console.log("Starting to stream audio");
+                                    dheeChatWidget.dheeAsrInUse = true;
+                                    startByteStream();
+                                } else {
+                                    var packet = JSON.parse(message.data);
+                                    if (packet.status == 0) {
+                                        if (dheeChatWidget.isRecording) {
+                                            if (dheeChatWidget.inputBox) {
+                                                dheeChatWidget.inputBox.value = packet.transcript;
+                                            }
+                                        }
+                                        if (dheeChatWidget.onInterimAudioTranscriptArrival) {
+                                            dheeChatWidget.onInterimAudioTranscriptArrival(packet.transcript);
+                                        }
+                                    }
+
+                                    if (packet.status == 1) {
+
+                                        var transcript = packet.transcript;
+                                        if (dheeChatWidget.onFinalAudioTranscriptArrival) {
+                                            dheeChatWidget.onFinalAudioTranscriptArrival(transcript);
+                                            window.dhee_user_provided_value = "";
+                                            dheeChatWidget.inputBox.value = "";
+                                            DheeChatApi.enableSpeechSynthesis();
+                                            return;
+                                        }
+                                        if (dheeChatWidget.autoSend === true) {
+                                            console.log("Sending transcription: " + transcript);
+                                            dheeChatWidget.sendMessage(transcript);
+                                            if (DheeChatApi.onAutoSend) {
+                                                DheeChatApi.onAutoSend();
+                                                DheeChatApi.enableSpeechSynthesis();
+                                            }
+                                            window.dhee_user_provided_value = "";
+                                            dheeChatWidget.inputBox.value = "";
+                                            return;
+                                        }
+
+                                    }
+                                }
+                                return;
+                            }
+                        }
+                        function onAsrSocketError(e) {
+                            console.error("Error in ASR Websocket:", e);
+                        }
+                        dheeAsrSocket.addEventListener('open', onAsrWebsocketConnected);
+                        dheeAsrSocket.addEventListener('error', onAsrSocketError);
+                        dheeAsrSocket.addEventListener('message', onAsrSocketMessage);
+                    } catch (asrSetupError) {
+                        console.error("Error Setting up ASR:", asrSetupError);
                     }
+
+
+                }).catch(function (error) {
+                    console.error("Error initiating Mic Stream:", error)
+                });
+
+            }
+
+            function closeWebsocket() {
+                try {
+                    if (dheeAsrSocket && dheeAsrSocket.readyState === dheeAsrSocket.OPEN) {
+                        dheeAsrSocket.close();
+                    }
+                } catch (error) {
+                    console.error(error);
                 }
             }
-            if (!hasVoice) {
-                if (lastFoundVoice) {
-                    msg.voice = lastFoundVoice;
-                    hasVoice = true;
-                }
-            }
-            if (!hasVoice) {
-                console.log("Fallback to DHEESPEECHAPI speech with lang : " + this.ttsLang);
-                var ap = document.getElementById("dhee_tts_output_player");
-                var audioUrl = this.myServerAddress + "/audio/" + this.info.voiceAssistanceKey + "/get-voice?utteranceId=" + utteranceId;
-                this.audioTracks.push(audioUrl);
-                if (this.audioTracks.length == 1) {
-                    ap.src = audioUrl;
-                    ap.muted = false;
-                    try {
-                        ap.play();
-                    } catch (e) {
-                        console.log(' audio player error ' + e);
+
+            function cleanUp() {
+                try {
+                    console.log("cleaning up connections");
+                    if (DheeWidgetChat.websocketProcessorScriptNode) {
+                        DheeWidgetChat.websocketProcessorScriptNode.disconnect();
+                    }
+                    if (microphoneStreamSource) {
+                        microphoneStreamSource.disconnect();
+                    }
+                    if (audioContext && audioContext.state != 'closed') {
+                        audioContext.close();
+                        delete audioContext;
                     }
 
+                } catch (error) {
+                    console.error(error);
                 }
-                return;
             }
-            msg.voiceURI = 'native';
-            msg.volume = 1; // 0 to 1
-            //msg.rate = 1; // 0.1 to 10
-            //msg.pitch = 2; //0 to 2
-            msg.text = message;
-            msg.lang = this.ttsLang;
-            msg.onstart = function (event) {
-                dheeChatWidget.startSynthesisResumeCycles();
-                dheeChatWidget.micPaused = true;
-                dheeChatWidget.pauseMic(true);
-                if (dheeChatWidget.onDheeSpeechStart) {
-                    dheeChatWidget.onDheeSpeechStart();
-                }
+
+            dheeChatWidget.newWebsocket = newWebsocket;
+            dheeChatWidget.stopDheeAsr = function () {
+                cleanUp();
+                closeWebsocket();
             };
+            dheeChatWidget.setupComplete = true;
 
-            msg.onend = function (event) {
-                dheeChatWidget.stopSynthesisResumeCycles();
-                dheeChatWidget.micPaused = false;
-                dheeChatWidget.resumeMic();
-                if (dheeChatWidget.onDheeSpeechFinished) {
-                    dheeChatWidget.onDheeSpeechFinished();
-                }
-            };
-            console.log("WSAPI speech with lang : " + this.ttsLang);
-            this.tts.speak(msg);
-        },
-
-
-        startSynthesisResumeCycles: function () {
-            if (!window.speechSynthesis) {
-                return;
-            }
-            window.speechSynthesisResumeInterval = setInterval(function () {
-                speechSynthesis.pause();
-                speechSynthesis.resume();
-            }, 10000);
-        },
-
-        stopSynthesisResumeCycles: function () {
-            if (!window.speechSynthesis) {
-                return;
-            }
-            clearInterval(window.speechSynthesisResumeInterval);
         },
 
         initializeSpeechRecognition: function () {
@@ -992,8 +1129,17 @@ window.DheeChatApiBuilder.create = (function ($) {
                         if (dheeChatWidget.isRecording) {
                             transcript = window.dhee_user_provided_value + window.interim_transcript;
                         }
+                        if (dheeChatWidget.onInterimAudioTranscriptArrival) {
+                            dheeChatWidget.onInterimAudioTranscriptArrival(transcript);
+                        }
                     }
                     if (isFinal) {
+                        if (dheeChatWidget.onFinalAudioTranscriptArrival) {
+                            dheeChatWidget.onFinalAudioTranscriptArrival(transcript);
+                            window.dhee_user_provided_value = "";
+                            dheeChatWidget.inputBox.value = "";
+                            return;
+                        }
                         if (dheeChatWidget.autoSend === true) {
                             dheeChatWidget.sendMessage(transcript);
                             if (DheeChatApi.onUserInputSent) {
@@ -1044,15 +1190,6 @@ window.DheeChatApiBuilder.create = (function ($) {
                     }
                 };
             }
-        },
-
-        isFemaleVoice: function (voiceName) {
-            for (var i in this.femaleVoiceNames) {
-                if (voiceName.toLowerCase().indexOf(this.femaleVoiceNames[i]) > 0) {
-                    return true;
-                }
-            }
-            return false;
         },
 
         startSTT: function () {
@@ -1125,269 +1262,18 @@ window.DheeChatApiBuilder.create = (function ($) {
 
         },
 
-        switchRecognitionLanguage: function (language) {
-            console.log("Changing language to " + language);
-            this.inputLanguage = language;
-            this.restartMic();
-        },
-
-        sendSwitchLanguageSignal: function (language) {
-            console.log("Sending change language signal to " + language);
-            this.sendCommandMessage("CUSTOM", { language: language, command: 'SET_LANGUAGE' });
-        },
-
-
-        initializeDheeSpeechRecognition: function (callId) {
-            var dheeChatWidget = DheeWidgetChat = this;
-            var audioContext;
-            var microphoneStreamSource;
-
-            dheeChatWidget.startListening = function () {
-                if (!dheeChatWidget.isRecording) {
-                    dheeChatWidget.isRecording = true;
-                }
-            }
-
-            dheeChatWidget.stopListening = function () {
-                if (dheeChatWidget.isRecording) {
-                    dheeChatWidget.isRecording = false;
-                }
-            }
-
-
-            function newWebsocket(callId) {
-                if (DheeWidgetChat.lastWebSocket) {
-                    var lastWebSocket = DheeWidgetChat.lastWebSocket;
-                    if (lastWebSocket.readyState === lastWebSocket.CONNECTING || lastWebSocket.readyState === lastWebSocket.OPEN) {
-                        return;
-                    }
-                }
-
-                var audioPromise = navigator.mediaDevices.getUserMedia({
-                    audio: {
-                        echoCancellation: true,
-                        channelCount: 1,
-                        sampleRate: {
-                            ideal: SAMPLE_RATE
-                        },
-                        sampleSize: SAMPLE_SIZE
-                    }
-                });
-
-                var websocketPromise = new Promise(function (resolve, reject) {
-
-                    var chatServer = dheeChatWidget.myServerAddress.replace("http:", "ws:").replace("https:", "wss:");
-
-                    var callConnectionUrl = chatServer + "/asr/";
-
-                    socket = new WebSocket(callConnectionUrl + callId);
-                    socket.binaryType = "arraybuffer";
-                    socket.addEventListener('open', resolve);
-                    socket.addEventListener('error', reject);
-                    return socket;
-
-                });
-
-                Promise.all([audioPromise, websocketPromise]).then(function (values) {
-
-                    var micStream = values[0];
-                    var socket = values[1].target;
-
-                    audioContext = new (window.AudioContext || window.webkitAudioContext)(/*{ sampleRate: 16000 }*/);
-
-                    var websocketProcessorScriptNode = audioContext.createScriptProcessor(8192, 1, 1);
-
-                    const MAX_INT = Math.pow(2, 16 - 1) - 1;
-
-                    function downsample(buffer, fromSampleRate, toSampleRate) {
-                        // buffer is a Float32Array
-                        var sampleRateRatio = Math.round(fromSampleRate / toSampleRate);
-                        var newLength = Math.round(buffer.length / sampleRateRatio);
-
-                        var result = new Float32Array(newLength);
-                        var offsetResult = 0;
-                        var offsetBuffer = 0;
-                        while (offsetResult < result.length) {
-                            var nextOffsetBuffer = Math.round((offsetResult + 1) * sampleRateRatio);
-                            var accum = 0, count = 0;
-                            for (var i = offsetBuffer; i < nextOffsetBuffer && i < buffer.length; i++) {
-                                accum += buffer[i];
-                                count++;
-                            }
-                            result[offsetResult] = accum / count;
-                            offsetResult++;
-                            offsetBuffer = nextOffsetBuffer;
-                        }
-                        return result;
-                    }
-
-                    websocketProcessorScriptNode.addEventListener('audioprocess', function (e) {
-
-                        if (!DheeWidgetChat.isRecording) {
-                            return;
-                        }
-                        var floatSamples = e.inputBuffer.getChannelData(0);
-                        var fromSampleRate = audioContext.sampleRate;
-                        var toSampleRate = 16000;
-                        if (fromSampleRate != toSampleRate) {
-                            console.log("micSamplingRate:" + fromSampleRate + "; Resampling to 16K");
-                            floatSamples = downsample(floatSamples, fromSampleRate, toSampleRate);
-                        }
-
-                        socket.send(Int16Array.from(floatSamples.map(function (n) {
-                            return n * MAX_INT;
-                        })));
-                    });
-
-                    DheeWidgetChat.websocketProcessorScriptNode = websocketProcessorScriptNode;
-
-
-                    socket.addEventListener('close', function (e) {
-                        console.log("Dhee ASR websocket closed");
-                    });
-                    socket.addEventListener('error', function (e) {
-                        console.log('Error from Dhee ASR websocket', e);
-                    });
-                    socket.addEventListener('message', onTranscription);
-
-                    function sendInitParams() {
-                        var config = {
-                            callKey: DheeWidgetChat.info.voiceAssistanceKey
-                        }
-                        socket.send(JSON.stringify(config));
-                    }
-
-                    function startByteStream(e) {
-                        microphoneStreamSource = audioContext.createMediaStreamSource(micStream);
-                        microphoneStreamSource.connect(websocketProcessorScriptNode);
-                        websocketProcessorScriptNode.connect(audioContext.destination);
-                    }
-
-                    function onTranscription(message) {
-
-                        if (typeof message.data === "string") {
-
-                            /*console.log("Got Text: " + message.data);*/
-                            if (message.data == "startStreaming") {
-                                console.log("Starting to stream audio");
-                                dheeChatWidget.dheeAsrInUse = true;
-                                startByteStream();
-                            } else {
-                                var packet = JSON.parse(message.data);
-                                if (packet.status == 0) {
-                                    if (dheeChatWidget.isRecording) {
-                                        if (dheeChatWidget.inputBox) {
-                                            dheeChatWidget.inputBox.value = packet.transcript;
-                                        }
-                                        
-                                    }
-                                }
-
-                                if (packet.status == 1) {
-
-                                    var transcript = packet.transcript;
-                                    if (dheeChatWidget.autoSend === true) {
-                                        console.log("Sending transcription: "+ transcript);
-                                        dheeChatWidget.sendMessage(transcript);
-                                        if (DheeChatApi.onUserInputSent) {
-                                            DheeChatApi.onUserInputSent();
-                                        }
-                                        window.dhee_user_provided_value = "";
-                                        dheeChatWidget.inputBox.value = "";
-                                        return;
-                                    }
-
-                                }
-                            }
-                            return;
-                        }
-                    }
-
-                    sendInitParams();
-
-
-                }).catch(console.log.bind(console));
-            }
-
-            function closeWebsocket() {
-                try {
-                    if (socket && socket.readyState === socket.OPEN) {
-                        socket.close();
-                    }
-                } catch (error) {
-                    console.error(error);
-                }
-            }
-
-            function cleanUp() {
-                try {
-                    console.log("cleaning up connections");
-                    if (DheeWidgetChat.websocketProcessorScriptNode) {
-                        DheeWidgetChat.websocketProcessorScriptNode.disconnect();
-                    }
-                    if (microphoneStreamSource) {
-                        microphoneStreamSource.disconnect();
-                    }
-                    if (audioContext && audioContext.state != 'closed') {
-                        audioContext.close();
-                        delete audioContext;
-                    }
-
-                } catch (error) {
-                    console.error(error);
-                }
-            }
-
-            function toggleWebsocket(e) {
-                var context = e.target;
-                if (context.state === 'running') {
-                    newWebsocket();
-                } else if (context.state === 'suspended') {
-                    setTimeout(function () {
-                        closeWebsocket();
-                    }, 1500);
-                }
-            }
-
-            dheeChatWidget.newWebsocket = newWebsocket;
-            dheeChatWidget.stopDheeAsr = function () {
-                cleanUp();
-                closeWebsocket();
-            };
-            dheeChatWidget.setupComplete = true;
-            newWebsocket(callId);
-        },
-
-
-
-
-        reset: function () {
-            this.started = false;
-            speechSynthesis.cancel();
-            this.stopListening();
-        },
-
-
-        restart: function () {
-            this.reset();
-            this.start(this.info);
-        },
-
         quit: function () {
 
             this.toClose = true;
             if (window.speechSynthesis) {
                 speechSynthesis.cancel();
             }
+            this.stopListening();
+            if (this.isWsConnected()) {
 
-            if (window.dhee_bosh_connection && dhee_bosh_connection.connected()) {
-                var p = new JSJaCPresence();
-                p.setType("unavailable");
-                dhee_bosh_connection.send(p);
                 this.toClose = true;
-                
                 setTimeout(function () {
-                    dhee_bosh_connection.disconnect();
+                    this.chatSocket.close();
                 }, 500)
             }
 
@@ -1402,39 +1288,19 @@ window.DheeChatApiBuilder.create = (function ($) {
             clearInterval(this.heartBeatThread);
 
         },
-        isConnected: function () {
-            if (!window.dhee_bosh_connection) {
-                return false;
+        isWsConnected: function () {
+            if (this.chatSocket && this.chatSocket.readyState === WebSocket.OPEN) {
+                return true;
             }
-            return dhee_bosh_connection.connected();
+            return false;
+        },
+        isConnected: function () {
+            return this.isWsConnected();
         },
         sendCloseIntent: function () {
-            this.sendXmppMsg("$dhee_close$");
+            this.sendWsMessage("$dhee_close$");
         },
 
-        paintAudioVisualizerFrame: function (analyser, CANVAS_WIDTH, CANVAS_HEIGHT, canvasContext) {
-
-            if (!analyser) {
-                return;
-            }
-            var freqByteData = new Uint8Array(analyser.frequencyBinCount);
-            analyser.getByteFrequencyData(freqByteData); //analyser.getByteTimeDomainData(freqByteData);
-
-            var SPACER_WIDTH = 2;
-            var BAR_WIDTH = 1;
-            var OFFSET = 100;
-            var numBars = Math.round(CANVAS_WIDTH / SPACER_WIDTH);
-
-            canvasContext.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
-            canvasContext.fillStyle = this.themeColor;
-            canvasContext.lineCap = 'round';
-
-            // Draw rectangle for each frequency bin.
-            for (var i = 0; i < numBars; ++i) {
-                var magnitude = (freqByteData[i + OFFSET] / 255) * CANVAS_HEIGHT;
-                canvasContext.fillRect(i * SPACER_WIDTH, CANVAS_HEIGHT, BAR_WIDTH, -magnitude);
-            }
-        },
         createLinksWhereApplicable: function (inputText) {
 
             var replacedText, replacePattern1, replacePattern2, replacePattern3;
@@ -1491,7 +1357,12 @@ window.DheeChatApiBuilder.create = (function ($) {
             if (window.dhee_minimise_typing) {
                 $("#messageInput, #dhee_chat_record_button, #sendChatButton").css("display", "inline-block");
             }
-            this.sendThisMessage(inputText);
+            if(this.onInteractiveResponse) {
+                this.onInteractiveResponse(inputText);
+            } else {
+                this.sendThisMessage(inputText);
+            }
+            
         },
         formatIfNeeded: function (text, internal) {
 
@@ -1757,123 +1628,9 @@ window.DheeChatApiBuilder.create = (function ($) {
 
             }
         },
-        saveIfNeeded: function () {
-            if (!window.dhee_bosh_connection) {
-                return;
-            }
-            //Save if chat is in progress
-            var con = dhee_bosh_connection;
-            var me = this;
-            if (typeof con != 'undefined' && con && con.connected()) {
-                // save backend type
-                if (con._hold) {
-                    // must be binding
-                    (new JSJaCCookie('btype', 'binding')).write();
-                } else {
-                    (new JSJaCCookie('btype', 'polling')).write();
-                }
-            }
 
-        },
-
-        detectClient: function () {
-
-            var dheeChatApi = this;
-            // Opera 8.0+
-            var isOpera = (!!window.opr && !!opr.addons) || !!window.opera || navigator.userAgent.indexOf(' OPR/') >= 0;
-
-            // Firefox 1.0+
-            var isFirefox = typeof InstallTrigger !== 'undefined';
-
-            // Safari 3.0+ "[object HTMLElementConstructor]"
-            var isSafari = /constructor/i.test(window.HTMLElement) || (function (p) {
-                return p.toString() === "[object SafariRemoteNotification]";
-            })(!window['safari'] || (typeof safari !== 'undefined' && safari.pushNotification));
-
-            // Internet Explorer 6-11
-            var isIE = /*@cc_on!@*/false || !!document.documentMode;
-
-            // Edge 20+
-            var isEdge = !isIE && !!window.StyleMedia;
-
-            // Chrome 1+
-            var isChrome = !!window.chrome && !!window.chrome.webstore;
-
-            // Blink engine detection
-            var isBlink = (isChrome || isOpera) && !!window.CSS;
-
-            this.clientType = null;
-            if (isOpera) {
-                this.clientType = "OTHERS";
-            } else if (isFirefox) {
-                this.clientType = "FIREFOX";
-            } else if (isSafari) {
-                this.clientType = "SAFARI";
-            } else if (isIE || isEdge) {
-                this.clientType = "IE";
-            } else if (isChrome) {
-                this.clientType = "CHROME";
-            } else if (isBlink) {
-                this.clientType = "OTHERS";
-            } else if ((navigator.userAgent.indexOf("Chrome") != -1)) {
-                this.clientType = "CHROME";
-            } else {
-                this.clientType = "OTHERS";
-            }
-
-            var userAgent = window.navigator.userAgent,
-                platform = window.navigator.platform,
-                macosPlatforms = ['Macintosh', 'MacIntel', 'MacPPC', 'Mac68K'],
-                windowsPlatforms = ['Win32', 'Win64', 'Windows', 'WinCE'],
-                iosPlatforms = ['iPhone', 'iPad', 'iPod'];
-
-            this.deviceSubTypeType = null;
-            if (macosPlatforms.indexOf(platform) !== -1) {
-                this.deviceSubTypeType = 'MAC';
-            } else if (iosPlatforms.indexOf(platform) !== -1) {
-                this.deviceSubTypeType = 'IOS';
-            } else if (windowsPlatforms.indexOf(platform) !== -1) {
-                this.deviceSubTypeType = 'WINDOWS';
-            } else if (/Windows Phone/.test(userAgent)) {
-                this.deviceSubTypeType = 'OTHERS';
-            } else if (/Android/.test(userAgent)) {
-                this.deviceSubTypeType = 'ANDROID';
-            } else if (!this.deviceSubTypeType && /Linux/.test(platform)) {
-                this.deviceSubTypeType = 'LINUX';
-            } else {
-                this.deviceSubTypeType = 'OTHERS';
-            }
-
-            var isMobile = false; //initiate as false
-            // device detection
-            if (/(android|bb\d+|meego).+mobile|avantgo|bada\/|blackberry|blazer|compal|elaine|fennec|hiptop|iemobile|ip(hone|od)|ipad|iris|kindle|Android|Silk|lge |maemo|midp|mmp|netfront|opera m(ob|in)i|palm( os)?|phone|p(ixi|re)\/|plucker|pocket|psp|series(4|6)0|symbian|treo|up\.(browser|link)|vodafone|wap|windows (ce|phone)|xda|xiino/i.test(navigator.userAgent)
-                || /1207|6310|6590|3gso|4thp|50[1-6]i|770s|802s|a wa|abac|ac(er|oo|s\-)|ai(ko|rn)|al(av|ca|co)|amoi|an(ex|ny|yw)|aptu|ar(ch|go)|as(te|us)|attw|au(di|\-m|r |s )|avan|be(ck|ll|nq)|bi(lb|rd)|bl(ac|az)|br(e|v)w|bumb|bw\-(n|u)|c55\/|capi|ccwa|cdm\-|cell|chtm|cldc|cmd\-|co(mp|nd)|craw|da(it|ll|ng)|dbte|dc\-s|devi|dica|dmob|do(c|p)o|ds(12|\-d)|el(49|ai)|em(l2|ul)|er(ic|k0)|esl8|ez([4-7]0|os|wa|ze)|fetc|fly(\-|_)|g1 u|g560|gene|gf\-5|g\-mo|go(\.w|od)|gr(ad|un)|haie|hcit|hd\-(m|p|t)|hei\-|hi(pt|ta)|hp( i|ip)|hs\-c|ht(c(\-| |_|a|g|p|s|t)|tp)|hu(aw|tc)|i\-(20|go|ma)|i230|iac( |\-|\/)|ibro|idea|ig01|ikom|im1k|inno|ipaq|iris|ja(t|v)a|jbro|jemu|jigs|kddi|keji|kgt( |\/)|klon|kpt |kwc\-|kyo(c|k)|le(no|xi)|lg( g|\/(k|l|u)|50|54|\-[a-w])|libw|lynx|m1\-w|m3ga|m50\/|ma(te|ui|xo)|mc(01|21|ca)|m\-cr|me(rc|ri)|mi(o8|oa|ts)|mmef|mo(01|02|bi|de|do|t(\-| |o|v)|zz)|mt(50|p1|v )|mwbp|mywa|n10[0-2]|n20[2-3]|n30(0|2)|n50(0|2|5)|n7(0(0|1)|10)|ne((c|m)\-|on|tf|wf|wg|wt)|nok(6|i)|nzph|o2im|op(ti|wv)|oran|owg1|p800|pan(a|d|t)|pdxg|pg(13|\-([1-8]|c))|phil|pire|pl(ay|uc)|pn\-2|po(ck|rt|se)|prox|psio|pt\-g|qa\-a|qc(07|12|21|32|60|\-[2-7]|i\-)|qtek|r380|r600|raks|rim9|ro(ve|zo)|s55\/|sa(ge|ma|mm|ms|ny|va)|sc(01|h\-|oo|p\-)|sdk\/|se(c(\-|0|1)|47|mc|nd|ri)|sgh\-|shar|sie(\-|m)|sk\-0|sl(45|id)|sm(al|ar|b3|it|t5)|so(ft|ny)|sp(01|h\-|v\-|v )|sy(01|mb)|t2(18|50)|t6(00|10|18)|ta(gt|lk)|tcl\-|tdg\-|tel(i|m)|tim\-|t\-mo|to(pl|sh)|ts(70|m\-|m3|m5)|tx\-9|up(\.b|g1|si)|utst|v400|v750|veri|vi(rg|te)|vk(40|5[0-3]|\-v)|vm40|voda|vulc|vx(52|53|60|61|70|80|81|83|85|98)|w3c(\-| )|webc|whit|wi(g |nc|nw)|wmlb|wonu|x700|yas\-|your|zeto|zte\-/i.test(navigator.userAgent.substr(0, 4))) {
-                isMobile = true;
-            }
-
-            this.deviceType = null;
-            if (isMobile) {
-                this.deviceType = "MOBILE";
-            } else {
-                this.deviceType = "DESKTOP";
-            }
-
-            this.pageURL = window.location.href;
-            this.timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-            this.locale = navigator.language || navigator.userLanguage;
-            this.deviceModel = WURFL.complete_device_name;
-            navigator.geolocation.getCurrentPosition(function (location) {
-                dheeChatApi.lattitude = location.coords.latitude;
-                dheeChatApi.longitude = location.coords.longitude;
-                dheeChatApi.accuracy = location.coords.accuracy;
-            });
-            //alert(this.deviceSubTypeType + " " + this.clientType + " " + this.deviceType);
-        },
 
         toClose: false,
-        botName: "Dhee",
-        bubbles: {},
-        audioVisualization: false,
         started: false,
         langCodes: {
             ENGLISH: 'en-IN',
@@ -1886,11 +1643,8 @@ window.DheeChatApiBuilder.create = (function ($) {
             TAMIL: 'ta-IN',
             TELUGU: 'te-IN'
         },
-        femaleVoiceNames: [
-            "female", "zira", "heera", "kalpana", "samantha", "fiona", "victoria"
-        ],
-        themeColor: window.dhee_theme_color,
-        otpVerification: window.dhee_otp_verification
+
+        themeColor: window.dhee_theme_color
     }
 
     window.DheeChatApi = DheeChatApi;
